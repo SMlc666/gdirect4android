@@ -100,10 +100,12 @@ jobs:
       - name: Assemble Android debug APK
         run: gradle -p android :app:assembleDebug --no-daemon --stacktrace
 
-      - name: Display APK signing SHA-1 for Android Google OAuth
+      - name: Display actual APK signing SHA-1 for Google OAuth Android client
         shell: bash
         run: |
-          keytool -list -v -keystore "$HOME/.android/debug.keystore" -alias androiddebugkey -storepass android -keypass android | grep 'SHA1:' || true
+          set -euo pipefail
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | tee /tmp/gdirect-signing-cert.txt
+          grep -E 'SHA-1 digest' /tmp/gdirect-signing-cert.txt
 
       - name: Verify JNI library packaged in APK
         run: unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libgdirect_android.so'

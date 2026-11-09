@@ -180,3 +180,25 @@ those crates directly. The desktop and CLI builds remain unchanged.
   performed by CI alone. Use the GitHub Actions artifact and follow up with
   actual-device results.
 
+
+
+### OAuth Android client setup for testing the integrated Drive browser
+
+1. In Google Cloud Console, create a project, enable **Google Drive API**.
+2. Set up the OAuth consent screen and add your Google Account under test users
+   if the application is still in Testing.
+3. Create OAuth client type **Android**, package
+   **com.smlc.gdirectandroid**. Register the SHA-1 shown by the **actual APK
+   signing certificate** printed in this workflow's *Display actual APK
+   signing SHA-1* job step, not a random Android Studio development key.
+4. Install the APK built by that exact CI run and tap **授权只读访问 Drive**.
+   It uses Google Play services AuthorizationClient and holds the short-lived
+   access token only in RAM. Google Play services and a Google account must
+   be present on the phone.
+5. Because CI creates a different debug signing certificate across fresh
+   runners, repeat registration for a different APK until stable release
+   signing with GitHub Actions secrets is configured.
+6. The requested \`drive.readonly\` scope is restricted. Personal testing with
+   test users is different from publishing; public availability may require
+   restricted-scope verification. The app never embeds a client secret.
+

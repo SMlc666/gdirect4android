@@ -83,17 +83,17 @@ fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64) -> 
         let _ = fs::remove_file(path.join(format!("{name}.aria2")));
         let arguments = (
             CString::new(url.as_str()), CString::new(path.to_string_lossy().as_bytes()),
-            CString::new(name), CString::new(ip), CString::new(""),
+            CString::new(name), CString::new(ip),
             CString::new(token), CString::new(ca),
         );
-        let (Ok(url), Ok(dir), Ok(name), Ok(ip), Ok(sni), Ok(token), Ok(ca)) = arguments else {
+        let (Ok(url), Ok(dir), Ok(name), Ok(ip), Ok(token), Ok(ca)) = arguments else {
             return "ERR\n路径或 OAuth 令牌含无效字节".into();
         };
         #[cfg(target_os = "android")]
         let result = unsafe {
             gdirect_download_ex(
                 url.as_ptr(), dir.as_ptr(), name.as_ptr(), ip.as_ptr(),
-                sni.as_ptr(), token.as_ptr(), ca.as_ptr(), 8,
+                std::ptr::null(), token.as_ptr(), ca.as_ptr(), 8,
                 Some(progress), std::ptr::null_mut(), false, 0, network,
             )
         };

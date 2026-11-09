@@ -1,6 +1,8 @@
 package com.smlc.gdirectandroid;
 
 import android.app.Activity;
+import android.accounts.Account;
+import com.google.android.gms.auth.api.signin.GoogleSignInAccount;
 import android.content.Intent;
 import android.content.IntentSender;
 import android.graphics.Color;
@@ -73,6 +75,7 @@ public final class DrivePanel extends LinearLayout {
     private final ArrayDeque<String> folders = new ArrayDeque<>();
     private String activeFolder = "root";
     private String accessToken; // in-memory only. Never expose to TextView or logs.
+    private Account authorizedAccount;
     private String nextPageToken;
     private Consumer<String> pending;
     private TextView status, location;
@@ -107,11 +110,26 @@ public final class DrivePanel extends LinearLayout {
         disconnect.setOnClickListener(v -> {
             accessToken = null;
             pending = null;
-            // revokeAccess is account-specific in the GIS API; Authorization
-            // may not return an account on every device, so clear local state
-            // and recommend using Google Account permissions to revoke.
             listing.removeAllViews();
-            status.setText("已从应用内清除临时令牌。要撤销已授予的权限，请到 Google 账号权限设置中操作。");
+            if (authorizedAccount == null) {
+                status.setText("已清除本地临时访问令牌。无法取得账号标识；请在 Google 账号权限页面撤销授权。");
+                return;
+            }
+            Account account = authorizedAccount;
+            authorizedAccount = null;
+            RevokeAccessRequest request = RevokeAccessRequest.builder()
+                .setAccount(account)
+                .setScopes(scopes)
+                .build();
+            status.setText("正在请求 Google 撤销 Drive 访问授权…");
+            authorization.revokeAccess(request)
+                .addOnSuccessListener(unused -> {
+                    if (!destroyed) status.setText("已向 Google 撤销本应用的访问授权。");
+                })
+                .addOnFailureListener(error -> {
+                    if (!destroyed) status.setText(
+                        "本地令牌已清除，但 Google 授权撤销失败，请在账号权限页面检查：" + error.getMessage());
+                });
         });
         search = new EditText(activity);
         search.setHint("在当前文件夹按名称搜索（留空显示全部）");
@@ -195,6 +213,15 @@ public final class DrivePanel extends LinearLayout {
     }
 
     private void accept(AuthorizationResult value) {
+        List<String> granted = value.getGrantedScopes();
+        if (granted == null || !granted.contains(SCOPE)) {
+            pending = null;
+            accessToken = null;
+            status.setText("Google 没有授予请求的 Drive 只读权限，不能继续访问文件。");
+            return;
+        }
+        GoogleSignInAccount google = value.toGoogleSignInAccount();
+        authorizedAccount = google == null ? null : google.getAccount();
         accessToken = value.getAccessToken();
         if (accessToken == null || accessToken.isEmpty()) {
             status.setText("没有取得 Google API access token；请重新授权。");

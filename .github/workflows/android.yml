@@ -1,0 +1,81 @@
+name: Android APK
+
+on:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+      - 'src/netif.rs'
+      - 'src/store.rs'
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+      - 'src/netif.rs'
+      - 'src/store.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK
+        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+
+      - name: Set up Rust Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+          components: rustfmt
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: android/native -> android/native/target
+
+      - name: Build Rust JNI library for arm64-v8a
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android26-clang"
+          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android26-clang"
+          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+          cargo build --manifest-path android/native/Cargo.toml --target aarch64-linux-android --release
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          cp android/native/target/aarch64-linux-android/release/libgdirect_android.so android/app/src/main/jniLibs/arm64-v8a/
+          test -s android/app/src/main/jniLibs/arm64-v8a/libgdirect_android.so
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Assemble Android debug APK
+        run: gradle -p android :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Verify JNI library packaged in APK
+        run: unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libgdirect_android.so'
+
+      - name: Upload installable debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdirect4android-arm64-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

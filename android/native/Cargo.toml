@@ -1,0 +1,19 @@
+[package]
+name = "gdirect-android"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "gdirect_android"
+crate-type = ["cdylib"]
+
+# Reuse the exact upstream network-interface and state-store source files.
+# libaria2 requires a separate Android NDK port; it is not linked yet.
+[dependencies]
+jni = "0.21.1"
+anyhow = "1"
+libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "system-proxy"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+socket2 = { version = "0.6", features = ["all"] }

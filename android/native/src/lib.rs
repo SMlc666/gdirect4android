@@ -68,7 +68,7 @@ fn google_probe() -> String {
     format!("未能连接已解析的 Google IP：\n{}", errors.join("\n"))
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeVersion(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -79,7 +79,7 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeVersion(
     )
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeNetworkStatus(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -87,7 +87,7 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeNetworkSt
     to_java(&mut env, &network_report())
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeProbeGoogle(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -95,7 +95,7 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeProbeGoog
     to_java(&mut env, &google_probe())
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeProbeIp(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,

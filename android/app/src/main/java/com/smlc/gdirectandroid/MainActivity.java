@@ -20,6 +20,8 @@ import android.net.NetworkCapabilities;
 import android.os.Bundle;
 import android.text.InputType;
 import android.widget.ArrayAdapter;
+import android.widget.AdapterView;
+import org.json.JSONObject;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -58,11 +60,18 @@ public final class MainActivity extends Activity {
     private static native String nativeProbeIp(String ip, long networkHandle);
     private static native String nativeVerifyGoogleIp(String ip, long networkHandle);
     private static native String nativeScanGoogle(long networkHandle);
+    private static native String nativeOptimizeGoogle(
+        long networkHandle, int maxCandidates, int workers, int speedMode);
+    private static native String nativeGoogleScanProgress();
+    private static native void nativeCancelGoogleScan();
+    static native String nativeDriveApiRequest(
+        String url, String method, String accessToken, String jsonBody,
+        long networkHandle, String pinnedIp);
     private static native String nativeTransferSample(long networkHandle);
     private static native String nativeSavePublicDriveSchema(long networkHandle, int cacheFd);
     private static native String nativeDownloadDrive(
         String fileId, String accessToken, String caPath,
-        String cacheDir, String cacheName, long networkHandle);
+        String cacheDir, String cacheName, long networkHandle, String rankedIps);
     private static native String nativeDownloadProgress();
     private static native void nativeCancelDownload();
 
@@ -82,6 +91,12 @@ public final class MainActivity extends Activity {
     private final List<Choice> choices = new ArrayList<>();
     private ConnectivityManager cm;
     private Spinner spinner;
+    private Spinner scanLevel;
+    private Spinner rankPreference;
+    private Spinner preferredIp;
+    private TextView endpointSummary;
+    private EndpointPool endpointPool;
+    private boolean updatingIpOptions = false;
     private TextView details;
     private TextView result;
     private Button googleButton;
@@ -107,6 +122,7 @@ public final class MainActivity extends Activity {
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        endpointPool = new EndpointPool(this);
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(Color.rgb(247, 249, 255));
         LinearLayout root = new LinearLayout(this);
@@ -116,7 +132,7 @@ public final class MainActivity extends Activity {
 
         TextView title = text(root, "gdirect for Android", 27, INK);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
-        text(root, "Milestone 8+9 · Google Drive + 原版 libaria2", 14, BLUE);
+        text(root, "Milestone 9.2 · Google IP 广域扫描 + 双通道优选", 14, BLUE);
         text(root, "选择系统默认、Wi-Fi 或移动网络，分别测试 Google。物理网卡不再依赖 Linux 路由表。", 15, MUTED);
         text(root, LOADED ? nativeVersion() : "原生库加载失败：" + LOAD_ERROR,
             13, LOADED ? BLUE : Color.RED);
@@ -129,7 +145,55 @@ public final class MainActivity extends Activity {
         refreshButton = button(root, "刷新 Android 网络");
         googleButton = button(root, "Google DNS + TCP 连通性测试");
         tlsButton = button(root, "Google TLS / HTTPS 验证（DNS IP）");
-        scanButton = button(root, "扫描 16 个 Google 前端 IP（最多 4 并发）");
+        text(root, "Google 前端节点扫描规模", 16, INK);
+        scanLevel = new Spinner(this);
+        scanLevel.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
+            new String[] {
+                "快速 · 128 IP / 16线程",
+                "标准 · 384 IP / 32线程",
+                "深度 · 768 IP / 64线程"
+            }));
+        scanLevel.setSelection(1);
+        root.addView(scanLevel);
+        text(root, "Google 节点优选策略", 16, INK);
+        rankPreference = new Spinner(this);
+        rankPreference.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
+            new String[] { "低延迟优先（Drive API）", "传输速度优先（大文件）" }));
+        root.addView(rankPreference);
+        scanButton = button(root, "扫描 Google IP 并自动优选（真 TLS + Drive API）");
+        Button scanProgressButton = button(root, "查看扫描进度");
+        scanProgressButton.setOnClickListener(v -> {
+            if (LOADED) result.setText("Google IP 扫描状态\n" + nativeGoogleScanProgress());
+        });
+        Button scanCancelButton = button(root, "取消当前 Google IP 扫描");
+        scanCancelButton.setOnClickListener(v -> {
+            if (LOADED) nativeCancelGoogleScan();
+            result.setText("已请求停止扫描，现有经过验证的优选 IP 不会被清空。");
+        });
+        text(root, "当前优选 IP（可以手动置顶）", 16, INK);
+        preferredIp = new Spinner(this);
+        root.addView(preferredIp);
+        endpointSummary = text(root, "", 13, MUTED);
+        preferredIp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+            @Override public void onItemSelected(
+                AdapterView<?> parent, android.view.View view, int position, long id) {
+                if (updatingIpOptions || endpointPool == null) return;
+                Choice choice = selected();
+                if (choice == null) return;
+                String raw = String.valueOf(preferredIp.getSelectedItem());
+                String ip = position == 0 ? null : raw.split(" · ")[0];
+                endpointPool.manuallySelect(choice.handle, ip, speedPreferred());
+                updateEndpointSummary();
+            }
+        });
+        rankPreference.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+            @Override public void onItemSelected(
+                AdapterView<?> parent, android.view.View view, int position, long id) {
+                updateEndpointChoices();
+            }
+        });
         transferButton = button(root, "传输测试：从已验证的 3 个 IP 下载公开 API 数据");
         saveButton = button(root, "真实保存文件：Google Drive API 公开文档 JSON");
         text(root, "指定 Google IP 测试", 17, INK);
@@ -153,7 +217,7 @@ public final class MainActivity extends Activity {
         drivePanel = new DrivePanel(this, () -> {
             Choice choice = selected();
             return choice == null ? null : choice.network;
-        }, (entry, token) -> {
+        }, endpointPool, () -> speedPreferred(), (entry, token) -> {
             if (!LOADED) {
                 result.setText("原生 libaria2 未加载，无法执行文件下载：" + LOAD_ERROR);
                 return;
@@ -213,7 +277,30 @@ public final class MainActivity extends Activity {
         });
         scanButton.setOnClickListener(v -> {
             Choice choice = selected();
-            if (choice != null) probe(() -> choice.title + "\n" + nativeScanGoogle(choice.handle));
+            if (choice == null) return;
+            int level = scanLevel.getSelectedItemPosition();
+            int[] sizes = { 128, 384, 768 };
+            int[] threads = { 16, 32, 64 };
+            int index = Math.max(0, Math.min(level, sizes.length - 1));
+            boolean speed = speedPreferred();
+            probe(() -> {
+                String raw = nativeOptimizeGoogle(
+                    choice.handle, sizes[index], threads[index], speed ? 1 : 0);
+                JSONObject data = new JSONObject(raw);
+                if (data.has("error")) {
+                    return "Google IP 扫描失败：" + data.optString("error");
+                }
+                int stored = endpointPool.accept(choice.handle, data);
+                runOnUiThread(this::updateEndpointChoices);
+                return choice.title
+                    + "\n候选检测：" + data.optInt("probed") + "/" + data.optInt("requested")
+                    + " · TLS/Drive 验证通过：" + data.optInt("success")
+                    + " · 并发：" + data.optInt("concurrency")
+                    + (data.optBoolean("cancelled") ? "\n扫描已取消" : "")
+                    + "\n新写入优选列表：" + stored
+                    + "\n" + endpointPool.summary(choice.handle, speed)
+                    + "\n所有优选结果仅来自 HTTPS 证书及 Google Drive API 验证；无法确保未来始终可达。";
+            });
         });
         manualTlsButton.setOnClickListener(v -> {
             Choice choice = selected();
@@ -290,6 +377,38 @@ public final class MainActivity extends Activity {
             if (choices.get(i).handle == oldHandle) { spinner.setSelection(i); break; }
         }
         details.setText(summary.toString());
+        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+            @Override public void onItemSelected(
+                AdapterView<?> parent, android.view.View view, int position, long id) {
+                updateEndpointChoices();
+            }
+        });
+        updateEndpointChoices();
+    }
+
+    private boolean speedPreferred() {
+        return rankPreference != null && rankPreference.getSelectedItemPosition() == 1;
+    }
+    private void updateEndpointSummary() {
+        if (endpointPool == null || endpointSummary == null) return;
+        Choice c = selected();
+        if (c == null) return;
+        endpointSummary.setText("Network handle：" + c.handle + "\n"
+            + endpointPool.summary(c.handle, speedPreferred()));
+    }
+    private void updateEndpointChoices() {
+        if (endpointPool == null || preferredIp == null) return;
+        Choice c = selected();
+        if (c == null) return;
+        updatingIpOptions = true;
+        String[] items = endpointPool.selectionOptions(c.handle, speedPreferred());
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(
+            this, android.R.layout.simple_spinner_dropdown_item, items);
+        preferredIp.setAdapter(adapter);
+        preferredIp.setSelection(0);
+        updatingIpOptions = false;
+        updateEndpointSummary();
     }
 
     private String tlsReport(Choice choice) {
@@ -435,7 +554,8 @@ public final class MainActivity extends Activity {
         try {
             String report = nativeDownloadDrive(
                 entry.id, token, googleCaFile().getAbsolutePath(),
-                work.getAbsolutePath(), tempName, network);
+                work.getAbsolutePath(), tempName, network,
+                String.join(",", endpointPool.addresses(network, speedPreferred())));
             if (!report.startsWith("OK\n")) {
                 return label + "\n" + report + "\n未向 Android 文档写入不完整的下载内容。";
             }

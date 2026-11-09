@@ -1,5 +1,5 @@
 //! Android JNI bootstrap that reuses gdirect's original network-interface code.
-//! Deliberately does not pretend to provide the aria2 download engine yet.
+//! Uses the original patched libaria2 engine and pinned-IP verified Google API.
 
 #[path = "../../../src/netif.rs"]
 mod netif;
@@ -13,6 +13,8 @@ mod verify;
 mod transfer;
 mod save;
 mod aria2;
+mod api;
+mod selector;
 use jni::JNIEnv;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};

@@ -175,6 +175,34 @@ fn download_one(ip: IpAddr, handle: u64, output: &mut File) -> Result<(Receipt, 
     Ok((receipt, start.elapsed()))
 }
 
+/// Small public Drive Discovery payload for endpoint selection.
+/// Authenticated Drive files are NOT fetched here. The public JSON is
+/// written to std::io::sink(), and full HTTP framing is verified.
+pub(crate) fn benchmark(ip: IpAddr, handle: u64) -> Result<(u64, u128), String> {
+    let begun = Instant::now();
+    let tcp = crate::android_network::connect(
+        SocketAddr::new(ip, 443), handle, Duration::from_millis(2500),
+    ).map_err(|e| format!("TCP：{e}"))?;
+    tcp.set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| format!("Read timeout：{e}"))?;
+    tcp.set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| format!("Write timeout：{e}"))?;
+    let tls = ClientConnection::new(
+        crate::verify::config().map_err(|e| format!("Google GTS：{e}"))?,
+        ServerName::try_from(HOST.to_owned()).map_err(|e| format!("Google SNI：{e}"))?,
+    ).map_err(|e| format!("TLS：{e}"))?;
+    let mut stream = StreamOwned::new(tls, tcp);
+    stream.write_all(REQUEST.as_bytes())
+        .map_err(|e| format!("HTTPS：{e}"))?;
+    let mut reader = BufReader::new(stream);
+    let mut sink = std::io::sink();
+    let receipt = receive(&mut reader, &mut sink)?;
+    if receipt.bytes < 4096 {
+        return Err("Google 测速文档数据太短".into());
+    }
+    Ok((receipt.bytes, begun.elapsed().as_millis()))
+}
+
 pub fn save(handle: u64, source_fd: i32) -> String {
     if source_fd < 0 { return "ERR\n无效文件描述符".into(); }
     let fd = unsafe { libc::dup(source_fd) };

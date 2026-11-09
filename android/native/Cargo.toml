@@ -1,6 +1,6 @@
 [package]
 name = "gdirect-android"
-version = "0.9.1-alpha.3"
+version = "0.9.2-alpha.1"
 edition = "2024"
 publish = false
 
@@ -9,7 +9,7 @@ name = "gdirect_android"
 crate-type = ["cdylib"]
 
 # Reuse the exact upstream network-interface and state-store source files.
-# libaria2 requires a separate Android NDK port; it is not linked yet.
+# Original patched libaria2 is cross-compiled and linked by Android CI.
 [dependencies]
 jni = "0.21.1"
 anyhow = "1"
@@ -25,6 +25,7 @@ rustls-pemfile = "2"
 sha2 = "0.11"
 
 md-5 = "0.11"
+serde_json = "1"
 
 [build-dependencies]
 cc = "1"

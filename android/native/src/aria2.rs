@@ -48,7 +48,7 @@ fn valid_name(name: &str) -> bool {
     name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
-fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64) -> String {
+fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64, route_ips: &str) -> String {
     if !valid_id(id) || !valid_name(name) {
         return "ERR\n文件 ID 或临时文件名非法".into();
     }
@@ -72,8 +72,17 @@ fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64) -> 
     let url = format!("https://www.googleapis.com/drive/v3/files/{id}?alt=media&supportsAllDrives=true");
     let output = path.join(name);
     let mut failures = Vec::new();
-    const IPS: [&str; 3] = ["142.250.27.100", "108.177.9.138", "64.233.160.100"];
-    for ip in IPS {
+    let mut ips = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for item in route_ips.split(',').take(16) {
+        let Ok(ip) = item.trim().parse::<std::net::Ipv4Addr>() else { continue; };
+        if crate::verify::google_ipv4(ip) && seen.insert(ip) {
+            ips.push(ip.to_string());
+        }
+        if ips.len() >= 8 { break; }
+    }
+    if ips.is_empty() { return "ERR\n没有可用的优选 Google IP".into(); }
+    for ip in &ips {
         if CANCEL.load(Ordering::Relaxed) {
             return "ERR\n用户取消 libaria2 下载".into();
         }
@@ -83,7 +92,7 @@ fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64) -> 
         let _ = fs::remove_file(path.join(format!("{name}.aria2")));
         let arguments = (
             CString::new(url.as_str()), CString::new(path.to_string_lossy().as_bytes()),
-            CString::new(name), CString::new(ip),
+            CString::new(name), CString::new(ip.as_str()),
             CString::new(token), CString::new(ca),
         );
         let (Ok(url), Ok(dir), Ok(name), Ok(ip), Ok(token), Ok(ca)) = arguments else {
@@ -110,7 +119,7 @@ fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64) -> 
         }
         failures.push(format!("{}：libaria2 状态码 {result}", ip.to_string_lossy()));
     }
-    format!("ERR\nlibaria2 下载失败（3 个 Google IP 均未成功）：\n{}", failures.join("\n"))
+    format!("ERR\nlibaria2 下载失败（{} 个优选 IP 均未成功）：\n{}", ips.len(), failures.join("\n"))
 }
 
 fn arg(env: &mut JNIEnv<'_>, input: JString<'_>) -> Result<String, String> {
@@ -121,14 +130,16 @@ fn arg(env: &mut JNIEnv<'_>, input: JString<'_>) -> Result<String, String> {
 pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeDownloadDrive(
     mut env: JNIEnv<'_>, _class: JClass<'_>,
     id: JString<'_>, token: JString<'_>, ca: JString<'_>,
-    dir: JString<'_>, name: JString<'_>, network: jlong,
+    dir: JString<'_>, name: JString<'_>, network: jlong, ips: JString<'_>,
 ) -> jstring {
     let args = (|| Ok::<_, String>((
         arg(&mut env, id)?, arg(&mut env, token)?,
         arg(&mut env, ca)?, arg(&mut env, dir)?, arg(&mut env, name)?,
+        arg(&mut env, ips)?,
     )))();
     let report = match args {
-        Ok((id, token, ca, dir, name)) => run(&id, &token, &ca, &dir, &name, network as u64),
+        Ok((id, token, ca, dir, name, ips)) =>
+            run(&id, &token, &ca, &dir, &name, network as u64, &ips),
         Err(e) => format!("ERR\nJNI 参数读取失败：{e}"),
     };
     crate::to_java(&mut env, &report)

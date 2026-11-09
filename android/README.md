@@ -344,3 +344,18 @@ registration, but it remains essential to Android APK update compatibility.
   selected network's **DNS**, which can yield Google IPs that time out in
   the user's area. Report the error instead of silently routing via VPN.
 
+
+## v0.9.2-alpha.1 — wide IPv4 frontend scan and shared endpoint ranking
+
+- Opt-in bounded scan presets: 128 candidates / 16 threads; 384 / 32; 768 / 64, with cancellation and progress.
+- Derives candidates from original gdirect Google core /24 prefixes and preferred host offsets, then checks against checked-in google-ranges.txt. Never sweeps arbitrary internet addresses.
+- Only Google GTS TLS hostname-verified and real Drive API HTTP 401/403 responses enter the pool. TCP alone does not count. No Fake-IP as a real direct endpoint.
+- Top 12 low-latency verified endpoints additionally receive a public Google Drive Discovery JSON full-document transfer, measuring short payload throughput (including TLS setup).
+- Select low-latency priority (Drive API) or throughput priority (bulk download), plus manually prefer a specific scanned winner.
+- Cache ranked endpoints per Android Network handle for at most 1 hour. Three actual-device verified addresses are fallbacks if a scan is not yet available.
+- Google Drive Java metadata now calls the Rust JNI Google API: literal IP and bound Android Network, TLS for www.googleapis.com with valid GTS certificate. No DNS-selected blocked Google addresses, no insecure HTTPS hostname override.
+- GET may try the next pinned endpoint after transport failure. POST/PATCH never automatically retry after an uncertain write to avoid duplicated operations.
+- The exact same ranked IPs are used by the original patched libaria2 media downloader (8-connection engine unchanged).
+- External browser Desktop OAuth and token exchange/refresh still use system/default routing; explicit Wi-Fi only applies to native Drive metadata and file transfers.
+- IPv4 scan only for this milestone; wider IPv6 discovery requires physical IPv6 reachability and separate device testing.
+- The scanner is user-triggered, bounded, and intentionally not a continuous background sweep.

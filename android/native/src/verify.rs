@@ -5,7 +5,7 @@
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -29,6 +29,32 @@ const SEEDS: [&str; 16] = [
 ];
 
 static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
+
+// Authoritative allowlist for bearer-bearing Drive API connections and
+// scan-generated candidates: the same checked-in Google non-Cloud prefixes
+// as the original gdirect. A valid TLS certificate alone is insufficient to
+// authorize sending a token to an arbitrary user-provided IP.
+static GOOGLE_V4: OnceLock<Vec<(u32, u32)>> = OnceLock::new();
+
+pub(crate) fn google_ipv4(address: Ipv4Addr) -> bool {
+    let ranges = GOOGLE_V4.get_or_init(|| {
+        include_str!("../../../src/google-ranges.txt")
+            .lines()
+            .filter_map(|raw| {
+                let item = raw.split('#').next()?.trim();
+                let (ip, mask) = item.split_once('/')?;
+                let ip: Ipv4Addr = ip.parse().ok()?;
+                let bits: u32 = mask.parse().ok()?;
+                if bits > 32 { return None; }
+                let prefix = if bits == 0 { 0 } else { u32::MAX << (32 - bits) };
+                Some((u32::from(ip) & prefix, prefix))
+            })
+            .collect()
+    });
+    let target = u32::from(address);
+    ranges.iter().any(|(network, mask)| target & mask == *network)
+}
+
 
 pub(crate) fn config() -> Result<Arc<ClientConfig>, String> {
     CONFIG.get_or_init(|| {
@@ -182,6 +208,14 @@ pub fn scan(handle: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn official_ipv4_allowlist_excludes_fake_and_external_ips() {
+        assert!(google_ipv4("142.250.27.100".parse().unwrap()));
+        assert!(google_ipv4("108.177.9.138".parse().unwrap()));
+        assert!(google_ipv4("64.233.160.100".parse().unwrap()));
+        assert!(!google_ipv4("198.18.1.246".parse().unwrap()));
+        assert!(!google_ipv4("1.1.1.1".parse().unwrap()));
+    }
     #[test]
     fn fake_ip_is_never_a_google_origin() {
         assert!(fake_ip("198.18.1.246".parse().unwrap()));

@@ -14,8 +14,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
@@ -58,6 +56,9 @@ public final class DrivePanel extends LinearLayout {
 
     private final Activity activity;
     private final Supplier<Network> chosenNetwork;
+    private final EndpointPool endpointPool;
+    private final Supplier<Boolean> speedPriority;
+    private volatile String lastVerifiedIp = "未连接";
     private final DownloadHandler onDownload;
     private final DesktopOAuth authorization;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -70,17 +71,22 @@ public final class DrivePanel extends LinearLayout {
     private LinearLayout listing;
     private boolean destroyed = false;
 
-    public DrivePanel(Activity activity, Supplier<Network> chosenNetwork, DownloadHandler onDownload) {
+    public DrivePanel(
+            Activity activity, Supplier<Network> chosenNetwork, EndpointPool endpointPool,
+            Supplier<Boolean> speedPriority, DownloadHandler onDownload) {
         super(activity);
         this.activity = activity;
         this.chosenNetwork = chosenNetwork;
+        this.endpointPool = endpointPool;
+        this.speedPriority = speedPriority;
         this.onDownload = onDownload;
         this.authorization = new DesktopOAuth(activity);
         setOrientation(VERTICAL);
         setPadding(0, 20, 0, 24);
         title("Google Drive · 桌面 OAuth + 完整权限（试验性）");
-        title("Drive 文件列表、搜索、修改遵照上方网络选择；浏览器 OAuth 和 Token 请求仍走系统默认网络。"
-            + " 选 Wi-Fi 后如 DNS/HTTPS 失败会直接报错，不回退到 VPN。");
+        title("Drive 元数据、搜索及文件管理现在与 libaria2 共用优选 Google IP；"
+            + "指定 Wi-Fi 的 Socket 在 TCP 前绑定该网络，并验证 Google 证书和域名。"
+            + "外部浏览器 OAuth 和 Token 刷新仍走系统默认网络。");
         status = title(
             "权限：完整 Google Drive（读取、创建、修改、移至回收站）。"
             + "\n桌面客户端的 127.0.0.1 回调不是 Google 推荐的 Android 授权方式。"
@@ -254,7 +260,8 @@ public final class DrivePanel extends LinearLayout {
                         if (destroyed || !folder.equals(activeFolder)) return;
                         nextPageToken = nextToken.isEmpty() ? null : nextToken;
                         location.setText("目录 ID：" + activeFolder + " · 本页 " + entries.size() + " 项");
-                        status.setText("列表读取完成（" + routeLabel + "）。"
+                        status.setText("列表读取完成（" + routeLabel
+                            + " · Google IP " + lastVerifiedIp + "）。"
                             + (nextPageToken == null ? "" : " 还有下一页。"));
                         for (DriveFile entry : entries) addEntry(entry);
                     });
@@ -390,7 +397,8 @@ public final class DrivePanel extends LinearLayout {
                     apiRequest(endpoint, token, method, data.serialize(), apiNetwork);
                     activity.runOnUiThread(() -> {
                         if (destroyed) return;
-                        status.setText("✅ " + action + "成功。正在刷新列表。");
+                        status.setText("✅ " + action + "成功（Google IP "
+                            + lastVerifiedIp + "）。正在刷新列表。");
                         list(false);
                     });
                 } catch (Exception error) {
@@ -403,57 +411,63 @@ public final class DrivePanel extends LinearLayout {
         });
     }
 
-    private static JSONObject apiRequest(
+    /**
+     * Google API calls must use the same ranked literal IP pool as aria2.
+     * Rust owns DNS bypass + selected-network TCP bind + GTS TLS hostname check.
+     * NEVER use a URL with an IP as the hostname; that changes TLS identity.
+     *
+     * Only GET is failover-retried. POST/PATCH are side-effecting: if Google
+     * committed a write but the response was lost, automatically retrying
+     * could create duplicate folders or repeat an account mutation.
+     */
+    private JSONObject apiRequest(
             String raw, String token, String method, JSONObject body, Network apiNetwork)
             throws Exception {
-        // HTTPS URL keeps the original hostname and certificate verification;
-        // per-Network DNS/connection is used for explicit Wi-Fi/cellular/VPN.
-        URL url = new URL(raw);
-        HttpURLConnection connection = (HttpURLConnection) (apiNetwork == null
-            ? url.openConnection() : apiNetwork.openConnection(url));
-        connection.setRequestMethod("PATCH".equals(method) ? "POST" : method);
-        if ("PATCH".equals(method)) connection.setRequestProperty("X-HTTP-Method-Override", "PATCH");
-        connection.setConnectTimeout(15000);
-        connection.setReadTimeout(20000);
-        connection.setInstanceFollowRedirects(false);
-        connection.setRequestProperty("Authorization", "Bearer " + token);
-        connection.setRequestProperty("Accept", "application/json");
-        if (body != null) {
-            byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
-            connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
-            connection.setDoOutput(true);
-            connection.setFixedLengthStreamingMode(bytes.length);
-            try (OutputStream output = connection.getOutputStream()) {
-                output.write(bytes);
-            }
+        long handle = apiNetwork == null ? 0L : apiNetwork.getNetworkHandle();
+        String[] candidates = endpointPool.addresses(handle, speedPriority.get());
+        if (candidates.length == 0) {
+            throw new IOException("没有经过验证的 Google API IP，请先扫描优选");
         }
-        try {
-            int code = connection.getResponseCode();
-            if (code < 200 || code >= 300) {
-                throw new IOException("Google Drive API HTTP " + code);
+        final String payload = body == null ? "" : body.toString();
+        IOException last = null;
+        for (String ip : candidates) {
+            final JSONObject envelope;
+            try {
+                envelope = new JSONObject(MainActivity.nativeDriveApiRequest(
+                    raw, method, token, payload, handle, ip));
+            } catch (LinkageError err) {
+                throw new IOException("Rust 原生 Google API 尚未加载：" + err.getMessage(), err);
             }
-            InputStream input = connection.getInputStream();
-            if (input == null) return new JSONObject();
-            try (InputStream stream = input; ByteArrayOutputStream memory = new ByteArrayOutputStream()) {
-                byte[] buffer = new byte[8192];
-                int read;
-                while ((read = stream.read(buffer)) != -1) {
-                    if (memory.size() + read > 2_000_000) throw new IOException("Google Drive JSON 响应过大");
-                    memory.write(buffer, 0, read);
+            if (envelope.has("error")) {
+                last = new IOException("Google IP " + ip + "："
+                    + envelope.optString("error", "未说明错误"));
+                if (!"GET".equals(method)) {
+                    throw new IOException("此操作可能已经提交，为防重复写入不自动换 IP 重试：" + last.getMessage());
                 }
-                return memory.size() == 0 ? new JSONObject() :
-                    new JSONObject(memory.toString("UTF-8"));
+                continue;
             }
-        } finally {
-            connection.disconnect();
+            int code = envelope.optInt("status", -1);
+            lastVerifiedIp = ip;
+            if (code < 200 || code >= 300) {
+                // HTTP status means a real Google API response was received.
+                // Never replay an OAuth error, quota error or write mutation.
+                throw new IOException("Google IP " + ip + " · Drive API HTTP " + code);
+            }
+            String json = envelope.optString("body", "{}");
+            if (json.isEmpty()) json = "{}";
+            return new JSONObject(json);
         }
+        throw new IOException("所选 Network 的 " + candidates.length
+            + " 个 Google 优选 IP 均未完成 TLS/HTTP 请求"
+            + (last == null ? "" : "；最后错误：" + last.getMessage())
+            + "。不会回退到 VPN。");
     }
 
     private static String enc(String raw) throws Exception {
         return URLEncoder.encode(raw, "UTF-8");
     }
 
-    private static JSONObject apiGet(String raw, String token, Network apiNetwork)
+    private JSONObject apiGet(String raw, String token, Network apiNetwork)
             throws Exception {
         return apiRequest(raw, token, "GET", null, apiNetwork);
     }

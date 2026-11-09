@@ -31,8 +31,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # ubuntu-latest already includes Android SDK command-line tools.
+      # setup-android@v3 currently fails by requesting the removed 'tools' package.
+      - name: Verify Android SDK tools
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          command -v sdkmanager
+          sdkmanager --version
 
       - name: Install Android SDK and NDK
         run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"

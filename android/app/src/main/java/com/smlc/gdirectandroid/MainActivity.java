@@ -113,6 +113,7 @@ public final class MainActivity extends Activity {
     private String pendingDriveToken;
     private long pendingDriveNetwork = -1L;
     private String pendingDriveNetworkLabel = "";
+    private String pendingDriveIps = "";
     private Button cancelDownloadButton;
     private Button downloadStatusButton;
     private long pendingSaveNetwork = -1L; // Invalid; never quietly route through VPN.
@@ -228,6 +229,9 @@ public final class MainActivity extends Activity {
             pendingDriveToken = token;
             pendingDriveNetwork = choice.handle;
             pendingDriveNetworkLabel = choice.title;
+            // Snapshot the exact ranked pool on the UI thread, at selection time.
+            pendingDriveIps = String.join(",",
+                endpointPool.addresses(choice.handle, speedPreferred()));
             Intent create = new Intent(Intent.ACTION_CREATE_DOCUMENT);
             create.addCategory(Intent.CATEGORY_OPENABLE);
             create.setType("application/octet-stream");
@@ -406,7 +410,7 @@ public final class MainActivity extends Activity {
         ArrayAdapter<String> adapter = new ArrayAdapter<>(
             this, android.R.layout.simple_spinner_dropdown_item, items);
         preferredIp.setAdapter(adapter);
-        preferredIp.setSelection(0);
+        preferredIp.setSelection(endpointPool.preferredPosition(c.handle, speedPreferred()));
         updatingIpOptions = false;
         updateEndpointSummary();
     }
@@ -500,8 +504,9 @@ public final class MainActivity extends Activity {
             String token = pendingDriveToken;
             long network = pendingDriveNetwork;
             String networkLabel = pendingDriveNetworkLabel;
+            String ips = pendingDriveIps;
             clearPendingDrive();
-            probe(() -> downloadDriveFile(destination, entry, token, network, networkLabel));
+            probe(() -> downloadDriveFile(destination, entry, token, network, networkLabel, ips));
             return;
         }
         if (requestCode != REQUEST_CREATE_FILE) return;
@@ -526,6 +531,7 @@ public final class MainActivity extends Activity {
         pendingDriveToken = null;
         pendingDriveNetwork = -1L;
         pendingDriveNetworkLabel = "";
+        pendingDriveIps = "";
     }
 
     private File googleCaFile() throws Exception {
@@ -543,7 +549,7 @@ public final class MainActivity extends Activity {
 
     private String downloadDriveFile(
             Uri destination, DrivePanel.DriveFile entry, String token,
-            long network, String label) throws Exception {
+            long network, String label, String lockedIps) throws Exception {
         if (entry.googleWorkspace()) return "此类型为 Google Workspace 文档，需导出功能，不支持 alt=media。";
         if (token == null || token.isEmpty()) return "Google access token 已过期，请重新授权。";
         File work = new File(getCacheDir(), "aria2-download");
@@ -554,8 +560,7 @@ public final class MainActivity extends Activity {
         try {
             String report = nativeDownloadDrive(
                 entry.id, token, googleCaFile().getAbsolutePath(),
-                work.getAbsolutePath(), tempName, network,
-                String.join(",", endpointPool.addresses(network, speedPreferred())));
+                work.getAbsolutePath(), tempName, network, lockedIps);
             if (!report.startsWith("OK\n")) {
                 return label + "\n" + report + "\n未向 Android 文档写入不完整的下载内容。";
             }

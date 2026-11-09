@@ -134,6 +134,15 @@ public final class EndpointPool {
         }
         return found;
     }
+    public synchronized int preferredPosition(long handle, boolean speedMode) {
+        String chosen = storage.getString(preferenceKey(handle), null);
+        if (chosen == null) return 0;
+        List<Candidate> list = sorted(handle, speedMode);
+        for (int index = 0; index < list.size(); index++) {
+            if (chosen.equals(list.get(index).ip)) return index + 1;
+        }
+        return 0;
+    }
     public synchronized void manuallySelect(long handle, String choice, boolean speedMode) {
         if (choice == null || choice.isEmpty()) {
             storage.edit().remove(preferenceKey(handle)).apply();

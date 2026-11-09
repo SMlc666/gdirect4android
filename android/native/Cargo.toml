@@ -1,6 +1,6 @@
 [package]
 name = "gdirect-android"
-version = "0.6.0"
+version = "0.8.9"
 edition = "2024"
 publish = false
 
@@ -23,3 +23,8 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 rustls-pemfile = "2"
 
 sha2 = "0.11"
+
+md-5 = "0.11"
+
+[build-dependencies]
+cc = "1"

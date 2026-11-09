@@ -12,6 +12,7 @@ mod android_network;
 mod verify;
 mod transfer;
 mod save;
+mod aria2;
 use jni::JNIEnv;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};

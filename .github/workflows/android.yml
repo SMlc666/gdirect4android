@@ -21,7 +21,7 @@ permissions:
 jobs:
   build-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -59,6 +59,14 @@ jobs:
       - name: Unit-test Android Rust HTTP parser on host
         run: cargo test --manifest-path android/native/Cargo.toml --lib
 
+      - name: Build patched libaria2 + OpenSSL Android ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash android/native/build-aria2-android.sh
+          sed -i '/#include <cstdint>/a extern uint64_t gdirect_android_network;' android/native/src/aria2_android_bridge.cc
+          grep -q 'extern uint64_t gdirect_android_network' android/native/src/aria2_android_bridge.cc
+
       - name: Build Rust JNI library for arm64-v8a
         shell: bash
         run: |
@@ -79,6 +87,11 @@ jobs:
 
       - name: Assemble Android debug APK
         run: gradle -p android :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Display APK signing SHA-1 for Android Google OAuth
+        shell: bash
+        run: |
+          keytool -list -v -keystore "$HOME/.android/debug.keystore" -alias androiddebugkey -storepass android -keypass android | grep 'SHA1:' || true
 
       - name: Verify JNI library packaged in APK
         run: unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libgdirect_android.so'

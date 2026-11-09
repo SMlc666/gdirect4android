@@ -145,3 +145,38 @@ those crates directly. The desktop and CLI builds remain unchanged.
   files, foreground downloads, resume, multi-connection libaria2 or OAuth.
 - CI builds the arm64 APK and tests the Rust stream decoder on Linux.
 
+
+
+## Combined milestone 0.8 + 0.9 — actual Drive + patched libaria2
+
+- Google Identity Services native Android Authorization API
+  (\`play-services-auth:22.0.0\`) requests Drive **read-only** permission.
+  No OAuth client secret or refresh/access token stored in the APK/database.
+  Token only lives in application memory and is refreshed by Google Play services.
+- Drive v3 files.list: root folders, subfolders, name search and pagination.
+  Non-Workspace Drive files can be selected and saved via Android SAF.
+- **Google Cloud setup required** for real user sign-in: enable Drive API,
+  configure OAuth consent/test users, and create an **Android OAuth client**
+  with package \`com.smlc.gdirectandroid\` and the exact SHA-1 from the APK
+  signing certificate. CI's ephemeral debug signing key changes between builds;
+  configure stable release signing before reliable reuse. Drive readonly is a
+  restricted OAuth scope (Google verification may be required to publish).
+- Native patched aria2 1.37.0 is NDK-cross-compiled with static OpenSSL 3.5.9.
+  The existing upstream patch is re-applied; Android adaptation calls
+  \`android_setsocknetwork\` inside **aria2 SocketCore**, before connect, and
+  fails if an explicit network bind is denied.
+- Rust JNI calls original C++ \`gdirect_download_ex\`, using 8 connections,
+  progress counters and cancel callback. Temporary files are stored in private
+  cache and copied to the user-selected SAF URI after successful download;
+  when available, Drive's md5Checksum and size are verified.
+- Auth/file listing uses Google Play services / Android HTTPS on the default
+  network, which may go through VPN. The pinned media-download sockets use
+  the chosen Android Network handle. Login cannot be forced to use an IP by
+  altering the Android socket hook.
+- Google Workspace documents require an export path, which is not yet wired
+  into this media-download action. Foreground service, persistent pause/resume,
+  and production signing also remain to be completed.
+- Google OAuth client registration and Android on-device testing cannot be
+  performed by CI alone. Use the GitHub Actions artifact and follow up with
+  actual-device results.
+

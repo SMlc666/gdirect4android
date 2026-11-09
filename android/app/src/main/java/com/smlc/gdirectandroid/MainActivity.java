@@ -1,6 +1,8 @@
 package com.smlc.gdirectandroid;
 
 import android.app.Activity;
+import java.security.MessageDigest;
+import java.io.FileOutputStream;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
@@ -57,6 +59,11 @@ public final class MainActivity extends Activity {
     private static native String nativeScanGoogle(long networkHandle);
     private static native String nativeTransferSample(long networkHandle);
     private static native String nativeSavePublicDriveSchema(long networkHandle, int cacheFd);
+    private static native String nativeDownloadDrive(
+        String fileId, String accessToken, String caPath,
+        String cacheDir, String cacheName, long networkHandle);
+    private static native String nativeDownloadProgress();
+    private static native void nativeCancelDownload();
 
     private static final class Choice {
         final Network network; // null means system default (potentially VPN).
@@ -84,6 +91,14 @@ public final class MainActivity extends Activity {
     private Button transferButton;
     private Button saveButton;
     private static final int REQUEST_CREATE_FILE = 6086;
+    private static final int REQUEST_DRIVE_DOWNLOAD = 6087;
+    private DrivePanel drivePanel;
+    private DrivePanel.DriveFile pendingDriveFile;
+    private String pendingDriveToken;
+    private long pendingDriveNetwork = -1L;
+    private String pendingDriveNetworkLabel = "";
+    private Button cancelDownloadButton;
+    private Button downloadStatusButton;
     private long pendingSaveNetwork = -1L; // Invalid; never quietly route through VPN.
     private String pendingSaveNetworkLabel = "";
     private Button manualTlsButton;
@@ -100,7 +115,7 @@ public final class MainActivity extends Activity {
 
         TextView title = text(root, "gdirect for Android", 27, INK);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
-        text(root, "Milestone 6 · Rust HTTPS 下载与 Android 文件保存", 14, BLUE);
+        text(root, "Milestone 8+9 · Google Drive + 原版 libaria2", 14, BLUE);
         text(root, "选择系统默认、Wi-Fi 或移动网络，分别测试 Google。物理网卡不再依赖 Linux 路由表。", 15, MUTED);
         text(root, LOADED ? nativeVersion() : "原生库加载失败：" + LOAD_ERROR,
             13, LOADED ? BLUE : Color.RED);
@@ -125,6 +140,34 @@ public final class MainActivity extends Activity {
         ipButton = button(root, "Rust 连接指定 IP 的 443 端口");
         manualTlsButton = button(root, "验证指定 IP 的 Google HTTPS / TLS");
         result = text(root, "先刷新网络，选择路径，然后点击测试。绑定失败不会静默回退到 VPN。", 14, INK);
+        cancelDownloadButton = button(root, "取消当前 libaria2 下载");
+        cancelDownloadButton.setOnClickListener(v -> {
+            if (LOADED) nativeCancelDownload();
+            result.setText("已向 libaria2 发出取消指令。");
+        });
+        downloadStatusButton = button(root, "查看 libaria2 实时进度");
+        downloadStatusButton.setOnClickListener(v -> {
+            if (LOADED) result.setText(nativeDownloadProgress());
+        });
+        drivePanel = new DrivePanel(this, (entry, token) -> {
+            Choice choice = selected();
+            if (choice == null) return;
+            pendingDriveFile = entry;
+            pendingDriveToken = token;
+            pendingDriveNetwork = choice.handle;
+            pendingDriveNetworkLabel = choice.title;
+            Intent create = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            create.addCategory(Intent.CATEGORY_OPENABLE);
+            create.setType("application/octet-stream");
+            create.putExtra(Intent.EXTRA_TITLE, entry.name);
+            try {
+                startActivityForResult(create, REQUEST_DRIVE_DOWNLOAD);
+            } catch (android.content.ActivityNotFoundException error) {
+                result.setText("无法打开 Android 文件选择器：" + error);
+                clearPendingDrive();
+            }
+        });
+        root.addView(drivePanel);
         result.setTextIsSelectable(true);
 
         refreshButton.setOnClickListener(v -> refresh());
@@ -312,6 +355,28 @@ public final class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (drivePanel != null && drivePanel.onActivityResult(requestCode, resultCode, data)) return;
+        if (requestCode == REQUEST_DRIVE_DOWNLOAD) {
+            if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+                result.setText("已取消 Drive 文件保存。");
+                clearPendingDrive();
+                return;
+            }
+            if (pendingDriveFile == null || pendingDriveToken == null ||
+                    pendingDriveNetwork < 0) {
+                result.setText("下载授权或网络选择状态失效；请重新选择文件。");
+                clearPendingDrive();
+                return;
+            }
+            Uri destination = data.getData();
+            DrivePanel.DriveFile entry = pendingDriveFile;
+            String token = pendingDriveToken;
+            long network = pendingDriveNetwork;
+            String networkLabel = pendingDriveNetworkLabel;
+            clearPendingDrive();
+            probe(() -> downloadDriveFile(destination, entry, token, network, networkLabel));
+            return;
+        }
         if (requestCode != REQUEST_CREATE_FILE) return;
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             result.setText("已取消保存位置选择，没有执行下载。");
@@ -327,6 +392,86 @@ public final class MainActivity extends Activity {
         String networkLabel = pendingSaveNetworkLabel;
         pendingSaveNetwork = -1L;
         probe(() -> saveToDocument(destination, handle, networkLabel));
+    }
+
+    private void clearPendingDrive() {
+        pendingDriveFile = null;
+        pendingDriveToken = null;
+        pendingDriveNetwork = -1L;
+        pendingDriveNetworkLabel = "";
+    }
+
+    private File googleCaFile() throws Exception {
+        File ca = new File(getNoBackupFilesDir(), "gts-roots.pem");
+        if (ca.isFile() && ca.length() > 1000) return ca;
+        try (InputStream input = getAssets().open("gts-roots.pem");
+             OutputStream output = new FileOutputStream(ca)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = input.read(buf)) != -1) output.write(buf, 0, n);
+            output.flush();
+        }
+        return ca;
+    }
+
+    private String downloadDriveFile(
+            Uri destination, DrivePanel.DriveFile entry, String token,
+            long network, String label) throws Exception {
+        if (entry.googleWorkspace()) return "此类型为 Google Workspace 文档，需导出功能，不支持 alt=media。";
+        if (token == null || token.isEmpty()) return "Google access token 已过期，请重新授权。";
+        File work = new File(getCacheDir(), "aria2-download");
+        if (!work.exists() && !work.mkdirs()) throw new java.io.IOException("无法创建临时下载目录");
+        final String tempName = "selected-drive-file.bin";
+        File downloaded = new File(work, tempName);
+        File checkpoint = new File(work, tempName + ".aria2");
+        try {
+            String report = nativeDownloadDrive(
+                entry.id, token, googleCaFile().getAbsolutePath(),
+                work.getAbsolutePath(), tempName, network);
+            if (!report.startsWith("OK\n")) {
+                return label + "\n" + report + "\n未向 Android 文档写入不完整的下载内容。";
+            }
+            long actual = downloaded.length();
+            if (actual == 0) return "libaria2 显示完成，但实际输出文件为空。";
+            if (entry.size >= 0 && entry.size != actual) {
+                return "下载大小与 Drive 元数据不符：" + actual + " / " + entry.size;
+            }
+            if (!entry.md5.isEmpty()) {
+                MessageDigest md5 = MessageDigest.getInstance("MD5");
+                try (InputStream source = new FileInputStream(downloaded)) {
+                    byte[] buf = new byte[32768];
+                    int n;
+                    while ((n = source.read(buf)) != -1) md5.update(buf, 0, n);
+                }
+                StringBuilder hex = new StringBuilder();
+                for (byte b : md5.digest()) hex.append(String.format(java.util.Locale.ROOT, "%02x", b & 0xff));
+                if (!entry.md5.equalsIgnoreCase(hex.toString())) {
+                    return "MD5 文件校验未通过；拒绝将可疑内容保存到用户文档。";
+                }
+            }
+            long written = 0;
+            try (InputStream source = new FileInputStream(downloaded);
+                 OutputStream target = getContentResolver().openOutputStream(destination, "wt")) {
+                if (target == null) throw new java.io.IOException("系统没有提供文档写入流");
+                byte[] buf = new byte[32768];
+                int n;
+                while ((n = source.read(buf)) != -1) {
+                    target.write(buf, 0, n);
+                    written += n;
+                }
+                target.flush();
+            } catch (Exception e) {
+                throw new java.io.IOException(
+                    "libaria2 下载成功，但保存到 SAF 文档失败；目标文件可能不完整：" + e, e);
+            }
+            if (written != actual) throw new java.io.IOException("SAF 写入字节数不匹配");
+            return "✅ Google Drive 文件已保存\n" + entry.name + "\n网络：" + label
+                + "\n" + report + "\nSAF 写入：" + written + " 字节"
+                + (entry.md5.isEmpty() ? "\nDrive 没有提供 MD5 元数据" : "\nMD5 校验通过");
+        } finally {
+            if (!downloaded.delete()) downloaded.deleteOnExit();
+            if (!checkpoint.delete()) checkpoint.deleteOnExit();
+        }
     }
 
     private String saveToDocument(Uri destination, long handle, String label) throws Exception {
@@ -429,6 +574,7 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onDestroy() {
         worker.shutdownNow();
+        if (drivePanel != null) drivePanel.shutdown();
         super.onDestroy();
     }
 }

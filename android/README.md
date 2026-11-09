@@ -57,3 +57,26 @@ those crates directly. The desktop and CLI builds remain unchanged.
 - A refused bind never silently falls back to VPN. The system-default option deliberately remains unbound.
 - VPNs must enable allowBypass; Android lockdown may prohibit direct traffic. A TCP success does not confirm TLS, Google Drive API, or actual downloads.
 - This is still a diagnostic APK, not a downloader; the libaria2 NDK port is the next development step.
+
+
+## Milestone 3 — authenticated Google TLS diagnostics
+
+- Uses the upstream gdirect Google Trust Services roots in
+  \`src/gts-roots.pem\`, full rustls chain and SNI hostname validation.
+- Sends an unauthenticated HTTPS GET to \`/drive/v3/about?fields=user\`.
+  HTTP 401/403 is the expected authentication challenge; that does **not**
+  mean user login or Drive downloads work.
+- The UI can verify a network-specific DNS IP, a manually entered IP, or
+  scan exactly sixteen embedded Google frontend candidates with four workers.
+  Each connection is bound to the selected Android Network before TCP connect.
+- 198.18.0.0/15 Fake-IP is explicitly flagged and never counted as genuine.
+- A fallback SNI \`g.cn\` is attempted only after a TLS failure, with its own
+  hostname check, mirroring the upstream gdirect routing strategy.
+- **No TLS verification is disabled**. Scanner traffic is user initiated and
+  bounded; it never performs an unbounded Internet-wide sweep.
+- Even a valid TLS+HTTP response over the system default or VPN network does
+  not establish *direct* physical-network reachability. Test physical network
+  selection and VPN-disabled scenarios separately.
+- Still no OAuth, Drive listing, libaria2, downloads, upload, or foreground
+  download service. A complete app requires all of those components.
+

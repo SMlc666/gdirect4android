@@ -1,6 +1,6 @@
 [package]
 name = "gdirect-android"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 publish = false
 
@@ -18,3 +18,6 @@ libc = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "system-proxy"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 socket2 = { version = "0.6", features = ["all"] }
+
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-pemfile = "2"

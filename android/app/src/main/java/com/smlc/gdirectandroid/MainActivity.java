@@ -46,6 +46,8 @@ public final class MainActivity extends Activity {
     }
     private static native String nativeVersion();
     private static native String nativeProbeIp(String ip, long networkHandle);
+    private static native String nativeVerifyGoogleIp(String ip, long networkHandle);
+    private static native String nativeScanGoogle(long networkHandle);
 
     private static final class Choice {
         final Network network; // null means system default (potentially VPN).
@@ -68,6 +70,9 @@ public final class MainActivity extends Activity {
     private Button googleButton;
     private Button ipButton;
     private Button refreshButton;
+    private Button tlsButton;
+    private Button scanButton;
+    private Button manualTlsButton;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -81,7 +86,7 @@ public final class MainActivity extends Activity {
 
         TextView title = text(root, "gdirect for Android", 27, INK);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
-        text(root, "Milestone 2 · Android 网络选择 / Rust Socket 绑定", 14, BLUE);
+        text(root, "Milestone 3 · Google TLS / HTTPS 真实验证", 14, BLUE);
         text(root, "选择系统默认、Wi-Fi 或移动网络，分别测试 Google。物理网卡不再依赖 Linux 路由表。", 15, MUTED);
         text(root, LOADED ? nativeVersion() : "原生库加载失败：" + LOAD_ERROR,
             13, LOADED ? BLUE : Color.RED);
@@ -93,6 +98,8 @@ public final class MainActivity extends Activity {
         details.setTextIsSelectable(true);
         refreshButton = button(root, "刷新 Android 网络");
         googleButton = button(root, "Google DNS + TCP 连通性测试");
+        tlsButton = button(root, "Google TLS / HTTPS 验证（DNS IP）");
+        scanButton = button(root, "扫描 16 个 Google 前端 IP（最多 4 并发）");
         text(root, "指定 Google IP 测试", 17, INK);
         EditText ipInput = new EditText(this);
         ipInput.setHint("IPv4 或 IPv6 地址");
@@ -100,12 +107,31 @@ public final class MainActivity extends Activity {
         ipInput.setSingleLine(true);
         root.addView(ipInput);
         ipButton = button(root, "Rust 连接指定 IP 的 443 端口");
+        manualTlsButton = button(root, "验证指定 IP 的 Google HTTPS / TLS");
         result = text(root, "先刷新网络，选择路径，然后点击测试。绑定失败不会静默回退到 VPN。", 14, INK);
         result.setTextIsSelectable(true);
 
         refreshButton.setOnClickListener(v -> refresh());
         googleButton.setEnabled(LOADED);
         ipButton.setEnabled(LOADED);
+        tlsButton.setEnabled(LOADED);
+        scanButton.setEnabled(LOADED);
+        manualTlsButton.setEnabled(LOADED);
+        tlsButton.setOnClickListener(v -> {
+            Choice choice = selected();
+            if (choice != null) probe(() -> tlsReport(choice));
+        });
+        scanButton.setOnClickListener(v -> {
+            Choice choice = selected();
+            if (choice != null) probe(() -> choice.title + "\n" + nativeScanGoogle(choice.handle));
+        });
+        manualTlsButton.setOnClickListener(v -> {
+            Choice choice = selected();
+            String address = ipInput.getText().toString().trim();
+            if (choice == null) return;
+            if (address.isEmpty()) { result.setText("请先输入 IP 地址。"); return; }
+            probe(() -> choice.title + "\n" + nativeVerifyGoogleIp(address, choice.handle));
+        });
         googleButton.setOnClickListener(v -> {
             Choice choice = selected();
             if (choice != null) probe(() -> googleReport(choice));
@@ -172,6 +198,34 @@ public final class MainActivity extends Activity {
         details.setText(summary.toString());
     }
 
+    private String tlsReport(Choice choice) {
+        StringBuilder out = new StringBuilder();
+        out.append("路径：").append(choice.title)
+           .append("\nTLS 证书：原项目 GTS 根证书 + hostname 检查（不会忽略校验）\n");
+        InetAddress[] addresses;
+        try {
+            addresses = choice.network == null
+                ? InetAddress.getAllByName("www.googleapis.com")
+                : choice.network.getAllByName("www.googleapis.com");
+        } catch (Exception e) {
+            return out.append("DNS 失败：").append(e).toString();
+        }
+        int v4 = 0, v6 = 0;
+        for (int family = 4; family <= 6; family += 2) {
+            for (InetAddress address : addresses) {
+                if (family == 4 && !(address instanceof Inet4Address)) continue;
+                if (family == 6 && !(address instanceof Inet6Address)) continue;
+                if (family == 4 && v4 >= 2) continue;
+                if (family == 6 && v6 >= 1) continue;
+                if (family == 4) v4++; else v6++;
+                out.append("\n").append(nativeVerifyGoogleIp(
+                    address.getHostAddress(), choice.handle)).append("\n");
+            }
+        }
+        if (v4 == 0 && v6 == 0) out.append("DNS 未提供可测地址");
+        return out.append("\nVPN/默认网络上的 HTTPS 成功仍可能由代理转发。").toString();
+    }
+
     private String googleReport(Choice choice) {
         StringBuilder out = new StringBuilder();
         out.append("路径：").append(choice.title)
@@ -209,6 +263,9 @@ public final class MainActivity extends Activity {
     private void probe(Probe work) {
         googleButton.setEnabled(false);
         ipButton.setEnabled(false);
+        tlsButton.setEnabled(false);
+        scanButton.setEnabled(false);
+        manualTlsButton.setEnabled(false);
         refreshButton.setEnabled(false);
         result.setText("正在检测，请稍候…");
         worker.execute(() -> {
@@ -222,6 +279,9 @@ public final class MainActivity extends Activity {
                 result.setText(report);
                 googleButton.setEnabled(LOADED);
                 ipButton.setEnabled(LOADED);
+                tlsButton.setEnabled(LOADED);
+                scanButton.setEnabled(LOADED);
+                manualTlsButton.setEnabled(LOADED);
                 refreshButton.setEnabled(true);
             });
         });

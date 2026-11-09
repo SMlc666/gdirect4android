@@ -80,3 +80,23 @@ those crates directly. The desktop and CLI builds remain unchanged.
 - Still no OAuth, Drive listing, libaria2, downloads, upload, or foreground
   download service. A complete app requires all of those components.
 
+
+
+## Milestone 4 — bounded real Google HTTPS payload transfer
+
+- From the real-device user's v0.3 scan, test \`142.250.27.100\`,
+  \`108.177.9.138\` and \`64.233.160.100\` independently.
+- Connect through the selected Android Network, validate GTS TLS and SNI
+  \`www.googleapis.com\`, fetch the public Drive REST Discovery document
+  at \`https://www.googleapis.com/discovery/v1/apis/drive/v3/rest\`.
+- Require HTTP 200 and actual response bytes; report sample size and rough
+  throughput including TCP/TLS setup time. A bounded 1 MiB per IP is read
+  into small in-memory chunks and immediately discarded.
+- Sequential test, maximum three IPs, no background work. This doesn't
+  require OAuth or touch private files. It does not yet write a downloaded
+  file or use libaria2. Avoid interpreting these short-sample rates as
+  sustained multi-GiB download performance.
+- CI remains GitHub Actions, unchanged. To continue, integrate real Android
+  native Network bindings into libaria2's patched socket layer, cross-compile
+  libaria2 with NDK/OpenSSL, and add authenticated Google Drive downloads.
+

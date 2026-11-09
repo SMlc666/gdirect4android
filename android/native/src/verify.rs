@@ -30,7 +30,7 @@ const SEEDS: [&str; 16] = [
 
 static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
 
-fn config() -> Result<Arc<ClientConfig>, String> {
+pub(crate) fn config() -> Result<Arc<ClientConfig>, String> {
     CONFIG.get_or_init(|| {
         let mut roots = RootCertStore::empty();
         let mut reader = std::io::BufReader::new(CERTS.as_bytes());

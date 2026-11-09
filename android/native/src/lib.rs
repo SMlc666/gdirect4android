@@ -10,6 +10,7 @@ use jni::objects::{JClass, JString};
 use jni::sys::{jlong, jstring};
 mod android_network;
 mod verify;
+mod transfer;
 use jni::JNIEnv;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -122,4 +123,16 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeScanGoogl
     network_handle: jlong,
 ) -> jstring {
     to_java(&mut env, &verify::scan(network_handle as u64))
+}
+
+
+/// Fetch a bounded public Google API document through the selected Android
+/// network. No filesystem write, secrets or Google account access.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeTransferSample(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    network_handle: jlong,
+) -> jstring {
+    to_java(&mut env, &transfer::run(network_handle as u64))
 }

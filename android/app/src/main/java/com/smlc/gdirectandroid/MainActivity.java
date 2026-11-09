@@ -48,6 +48,7 @@ public final class MainActivity extends Activity {
     private static native String nativeProbeIp(String ip, long networkHandle);
     private static native String nativeVerifyGoogleIp(String ip, long networkHandle);
     private static native String nativeScanGoogle(long networkHandle);
+    private static native String nativeTransferSample(long networkHandle);
 
     private static final class Choice {
         final Network network; // null means system default (potentially VPN).
@@ -72,6 +73,7 @@ public final class MainActivity extends Activity {
     private Button refreshButton;
     private Button tlsButton;
     private Button scanButton;
+    private Button transferButton;
     private Button manualTlsButton;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
@@ -86,7 +88,7 @@ public final class MainActivity extends Activity {
 
         TextView title = text(root, "gdirect for Android", 27, INK);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
-        text(root, "Milestone 3 · Google TLS / HTTPS 真实验证", 14, BLUE);
+        text(root, "Milestone 4 · Google API 真实数据传输", 14, BLUE);
         text(root, "选择系统默认、Wi-Fi 或移动网络，分别测试 Google。物理网卡不再依赖 Linux 路由表。", 15, MUTED);
         text(root, LOADED ? nativeVersion() : "原生库加载失败：" + LOAD_ERROR,
             13, LOADED ? BLUE : Color.RED);
@@ -100,6 +102,7 @@ public final class MainActivity extends Activity {
         googleButton = button(root, "Google DNS + TCP 连通性测试");
         tlsButton = button(root, "Google TLS / HTTPS 验证（DNS IP）");
         scanButton = button(root, "扫描 16 个 Google 前端 IP（最多 4 并发）");
+        transferButton = button(root, "传输测试：从已验证的 3 个 IP 下载公开 API 数据");
         text(root, "指定 Google IP 测试", 17, INK);
         EditText ipInput = new EditText(this);
         ipInput.setHint("IPv4 或 IPv6 地址");
@@ -116,10 +119,16 @@ public final class MainActivity extends Activity {
         ipButton.setEnabled(LOADED);
         tlsButton.setEnabled(LOADED);
         scanButton.setEnabled(LOADED);
+        transferButton.setEnabled(LOADED);
         manualTlsButton.setEnabled(LOADED);
         tlsButton.setOnClickListener(v -> {
             Choice choice = selected();
             if (choice != null) probe(() -> tlsReport(choice));
+        });
+
+        transferButton.setOnClickListener(v -> {
+            Choice choice = selected();
+            if (choice != null) probe(() -> choice.title + "\n" + nativeTransferSample(choice.handle));
         });
         scanButton.setOnClickListener(v -> {
             Choice choice = selected();
@@ -265,6 +274,7 @@ public final class MainActivity extends Activity {
         ipButton.setEnabled(false);
         tlsButton.setEnabled(false);
         scanButton.setEnabled(false);
+        transferButton.setEnabled(false);
         manualTlsButton.setEnabled(false);
         refreshButton.setEnabled(false);
         result.setText("正在检测，请稍候…");
@@ -281,6 +291,7 @@ public final class MainActivity extends Activity {
                 ipButton.setEnabled(LOADED);
                 tlsButton.setEnabled(LOADED);
                 scanButton.setEnabled(LOADED);
+                transferButton.setEnabled(LOADED);
                 manualTlsButton.setEnabled(LOADED);
                 refreshButton.setEnabled(true);
             });

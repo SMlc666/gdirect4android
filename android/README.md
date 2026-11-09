@@ -255,3 +255,66 @@ Sources:
 - https://developers.google.com/identity/protocols/oauth2/native-app
 - https://developers.google.com/identity/protocols/oauth2/resources/loopback-migration
 - https://developers.google.com/workspace/drive/api/guides/api-specific-auth
+
+
+## Permanent APK signing for seamless updates (v0.9.1-alpha.2+)
+
+**This supersedes the old ephemeral GitHub runner Debug signature.**
+Android requires the *same certificate/private key* for an installed APK to
+be updated in place. Reprinting an old SHA-1 is NOT enough. The keystore
+must be generated **once** on your own trusted machine and kept private.
+
+The repository intentionally contains NO keystore or signing passwords.
+The GitHub connector currently cannot write Actions Secrets for you, so
+the owner must perform this **one-time** setup with GitHub CLI:
+
+```bash
+gh auth login
+bash android/scripts/setup-stable-signing.sh
+```
+
+Requirements: `gh` (GitHub CLI), Java JDK `keytool`, OpenSSL and coreutils.
+In Termux, install `gh`, `openssl`, `openjdk-17`, `coreutils` if absent.
+
+The setup script creates and reuses (not rotates):
+
+- Private PKCS12 keystore:
+  `~/.config/gdirect4android/signing/gdirect4android-stable.p12`
+- Private password file:
+  `~/.config/gdirect4android/signing/store-password`
+
+It uploads **four encrypted GitHub Actions Secrets**:
+
+- `GDIRECT_ANDROID_KEYSTORE_B64`
+- `GDIRECT_ANDROID_STORE_PASSWORD`
+- `GDIRECT_ANDROID_KEY_ALIAS`
+- `GDIRECT_ANDROID_KEY_PASSWORD`
+
+And one *public* certificate fingerprint repository variable:
+`GDIRECT_ANDROID_SIGNING_SHA256`.
+
+The workflow:
+1. For trusted **push** and **workflow_dispatch** runs, restores the key from
+   Secrets and signs the Debug APK with the **permanent** certificate.
+2. Verifies the actual APK signing certificate SHA-256 against the pinned
+   repository variable and **refuses artifact publication on mismatch**.
+3. Uploads artifact `gdirect4android-arm64-stable-signed-apk` only when
+   secret signing is configured and the certificate check passed.
+4. PR workflows and unconfigured runners still compile and test an ephemeral
+   debug APK, but **do not upload it as a compatible Android update**.
+
+**Backup both private files securely.** Never add them to source code, public
+GitHub Actions artifacts, chat uploads, or publicly shared cloud folders.
+If the files are lost *and* the repository secrets become inaccessible, a
+replacement key will not update the installed app in place.
+
+**One unavoidable transition:** Earlier alpha builds used ephemeral Android
+Debug keys. Their certs are not preserved in this repository. Moving to the
+first permanent signed APK therefore normally requires uninstalling the old
+package and reinstalling, losing its local app preferences/tokens unless
+backed up. **After** installing the first permanent-signed build, future
+versions from the same key can update without a reinstall.
+
+For users of Desktop OAuth, this change is independent of Desktop Client ID
+configuration; the signer's SHA-1 is no longer needed for OAuth client
+registration, but it remains essential to Android APK update compatibility.

@@ -97,23 +97,83 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Assemble Android debug APK
-        run: gradle -p android :app:assembleDebug --no-daemon --stacktrace
-
-      - name: Display actual APK signing SHA-1 for Google OAuth Android client
+      # Only trusted push/manual workflows may receive the private signing key.
+      # PR builds, including same-repo PRs, receive NO signing secrets.
+      - name: Restore persistent Android signing keystore for trusted builds
+        if: github.event_name != 'pull_request'
         shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.GDIRECT_ANDROID_KEYSTORE_B64 }}
         run: |
           set -euo pipefail
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | tee /tmp/gdirect-signing-cert.txt
-          grep -E 'SHA-1 digest' /tmp/gdirect-signing-cert.txt
+          if [[ -z "$KEYSTORE_B64" ]]; then
+            echo "::notice::Permanent Android key not configured. Building for CI checks only; no installable APK will be published."
+            echo "GDIRECT_SIGNING_READY=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          install -d -m 700 "$RUNNER_TEMP/gdirect-signing"
+          KEYSTORE_FILE="$RUNNER_TEMP/gdirect-signing/permanent.p12"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE_FILE"
+          chmod 600 "$KEYSTORE_FILE"
+          test -s "$KEYSTORE_FILE"
+          echo "GDIRECT_SIGNING_KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "GDIRECT_SIGNING_READY=true" >> "$GITHUB_ENV"
+
+      - name: Assemble Android debug APK (trusted permanent signing)
+        if: github.event_name != 'pull_request' && env.GDIRECT_SIGNING_READY == 'true'
+        shell: bash
+        env:
+          GDIRECT_SIGNING_STORE_PASSWORD: ${{ secrets.GDIRECT_ANDROID_STORE_PASSWORD }}
+          GDIRECT_SIGNING_KEY_ALIAS: ${{ secrets.GDIRECT_ANDROID_KEY_ALIAS }}
+          GDIRECT_SIGNING_KEY_PASSWORD: ${{ secrets.GDIRECT_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ -n "$GDIRECT_SIGNING_STORE_PASSWORD" ]]
+          [[ -n "$GDIRECT_SIGNING_KEY_ALIAS" ]]
+          [[ -n "$GDIRECT_SIGNING_KEY_PASSWORD" ]]
+          gradle -p android :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Assemble APK for compile validation only (not a distributed update)
+        if: github.event_name == 'pull_request' || env.GDIRECT_SIGNING_READY != 'true'
+        shell: bash
+        run: gradle -p android :app:assembleDebug --no-daemon --stacktrace
 
       - name: Verify JNI library packaged in APK
+        shell: bash
         run: unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libgdirect_android.so'
 
-      - name: Upload installable debug APK
+      - name: Verify stable APK certificate before distribution
+        if: github.event_name != 'pull_request' && env.GDIRECT_SIGNING_READY == 'true'
+        shell: bash
+        env:
+          EXPECTED_SHA256: ${{ vars.GDIRECT_ANDROID_SIGNING_SHA256 }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || {
+            echo "::error::Missing GDIRECT_ANDROID_SIGNING_SHA256 GitHub variable"; exit 1;
+          }
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$APK" \
+            > "$RUNNER_TEMP/gdirect-apk-cert.txt"
+          ACTUAL_SHA256="$(grep 'Signer #1 certificate SHA-256 digest:' \
+            "$RUNNER_TEMP/gdirect-apk-cert.txt" | awk '{print $NF}' | head -n1)"
+          [[ -n "$ACTUAL_SHA256" ]] || {
+            echo "::error::Could not read APK signing certificate"; exit 1;
+          }
+          if [[ "${ACTUAL_SHA256,,}" != "${EXPECTED_SHA256,,}" ]]; then
+            echo "::error::APK certificate changed! Refusing to publish an incompatible update."
+            echo "Expected: $EXPECTED_SHA256"
+            echo "Actual:   $ACTUAL_SHA256"
+            exit 1
+          fi
+          echo "Stable APK signing SHA-256 verified: $ACTUAL_SHA256"
+          echo "STABLE_CERT_SHA256=$ACTUAL_SHA256" >> "$GITHUB_ENV"
+
+      - name: Publish installable stable-signed Android APK
+        if: github.event_name != 'pull_request' && env.GDIRECT_SIGNING_READY == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: gdirect4android-arm64-debug-apk
+          name: gdirect4android-arm64-stable-signed-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14

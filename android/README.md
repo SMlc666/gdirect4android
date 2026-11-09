@@ -318,3 +318,6 @@ versions from the same key can update without a reinstall.
 For users of Desktop OAuth, this change is independent of Desktop Client ID
 configuration; the signer's SHA-1 is no longer needed for OAuth client
 registration, but it remains essential to Android APK update compatibility.
+
+
+<!-- Rebuild requested after one-time stable signing Secrets configuration. -->

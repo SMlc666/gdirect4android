@@ -59,6 +59,17 @@ jobs:
       - name: Unit-test Android Rust HTTP parser on host
         run: cargo test --manifest-path android/native/Cargo.toml --lib
 
+      - name: Cache Android libaria2 and OpenSSL cross-built archives
+        uses: actions/cache@v4
+        with:
+          path: |
+            android/native/target/android-openssl
+            android/native/target/android-aria2
+            android/native/target/vendor/openssl-3.5.9.tar.gz
+            android/native/target/vendor/aria2-1.37.0.tar.xz
+            android/native/src/aria2_android_bridge.cc
+          key: gdirect-android-arm64-native-openssl3.5.9-aria2-1.37.0-r1
+
       - name: Build patched libaria2 + OpenSSL Android ARM64
         shell: bash
         run: |
@@ -74,6 +85,7 @@ jobs:
           TOOLCHAIN="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android26-clang"
           export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android26-clang"
+          export CXX_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android26-clang++"
           export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
           cargo build --manifest-path android/native/Cargo.toml --target aarch64-linux-android --release
           mkdir -p android/app/src/main/jniLibs/arm64-v8a

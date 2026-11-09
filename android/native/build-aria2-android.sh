@@ -16,6 +16,10 @@ SSL="$OUT/android-openssl"
 ARIA="$OUT/android-aria2"
 SRC="$OUT/vendor"
 mkdir -p "$SRC" "$SSL" "$ARIA"
+if [ -s "$SSL/lib/libssl.a" ] && [ -s "$ARIA/lib/libaria2.a" ] && [ -s "$ROOT/android/native/src/aria2_android_bridge.cc" ]; then
+  echo "Using cached Android libaria2 + OpenSSL archives"
+  exit 0
+fi
 VER=3.5.9
 TAR="$SRC/openssl-$VER.tar.gz"
 URL="https://github.com/openssl/openssl/releases/download/openssl-$VER/openssl-$VER.tar.gz"

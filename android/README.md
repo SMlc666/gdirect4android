@@ -120,3 +120,28 @@ those crates directly. The desktop and CLI builds remain unchanged.
 - The stand-alone host unit test build has an Android-only NDK binding gate:
   Linux tests do not attempt to link libandroid. Android builds continue using
   android_setsocknetwork before TCP connect.
+
+
+## Milestone 6 — actual Google HTTPS file saved to Android Documents
+
+- The user selects Wi-Fi/VPN/another available Android Network and taps
+  **真实保存文件**. Android ACTION_CREATE_DOCUMENT opens the SAF picker and
+  lets the user select where the JSON file is stored. No broad storage
+  permissions or Android root access are needed.
+- Rust downloads Google's public Drive REST Discovery JSON via verified GTS
+  TLS / SNI and the selected Android Network, trying three previously
+  verified Google frontends in order on failures. No login or secret token.
+- A Rust streaming HTTP/1.1 reader decodes Content-Length/chunked into an
+  app-private temporary file and checks response completeness, HTTP 200,
+  content-type, max 8 MiB and SHA-256. It rejects truncated bodies,
+  error pages, gzip or ambiguous framing.
+- A JNI-passed ParcelFileDescriptor is duplicated in Rust to avoid closing a
+  file owned by Java. Rust resets the temporary file between IP retries.
+- After a **complete and verified** download, Java copies it into the
+  selected SAF URI, then deletes temporary data. Incomplete network results
+  are never copied. If a provider fails during the last copy, the target
+  may be partial and the app explicitly reports this.
+- This is an end-to-end real file save but **not** authenticated Google Drive
+  files, foreground downloads, resume, multi-connection libaria2 or OAuth.
+- CI builds the arm64 APK and tests the Rust stream decoder on Linux.
+

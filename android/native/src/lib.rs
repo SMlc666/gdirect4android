@@ -11,6 +11,7 @@ use jni::sys::{jlong, jstring};
 mod android_network;
 mod verify;
 mod transfer;
+mod save;
 use jni::JNIEnv;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -135,4 +136,17 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeTransferS
     network_handle: jlong,
 ) -> jstring {
     to_java(&mut env, &transfer::run(network_handle as u64))
+}
+
+
+/// Download public Google Discovery JSON through an Android-selected network
+/// into a duplicated app-private temporary file descriptor.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeSavePublicDriveSchema(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    network_handle: jlong,
+    cache_fd: jni::sys::jint,
+) -> jstring {
+    to_java(&mut env, &save::save(network_handle as u64, cache_fd))
 }

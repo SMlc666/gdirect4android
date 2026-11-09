@@ -7,7 +7,8 @@ mod netif;
 mod store;
 
 use jni::objects::{JClass, JString};
-use jni::sys::jstring;
+use jni::sys::{jlong, jstring};
+mod android_network;
 use jni::JNIEnv;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -19,31 +20,12 @@ fn to_java(env: &mut JNIEnv<'_>, text: &str) -> jstring {
 }
 
 fn network_report() -> String {
-    let status = netif::status();
-    let physical = status
-        .physical
-        .as_ref()
-        .map(|i| format!("{} (index {})", i.name, i.index))
-        .unwrap_or_else(|| "未检测到".into());
-    let tun = status.tun.as_deref().unwrap_or("未检测到");
-    let route = status.path().unwrap_or_else(|| "未知".into());
-    let bind = if !status.enabled {
-        "已禁用".to_string()
-    } else if let Some(reason) = status.denied.as_ref() {
-        format!("绑定失败：{reason}")
-    } else if status.bound().is_some() {
-        "绑定测试已通过（仍需实际网络验证）".to_string()
-    } else {
-        "没有可绑定的物理网卡".to_string()
-    };
-    format!(
-        "gdirect Rust 网络状态\n物理网卡：{physical}\n虚拟网卡：{tun}\n路径：{route}\n绕开 TUN：{bind}\n\nAndroid 的网络路由与 Linux 不完全相同；这里不能替代 Android Network API 的测试。"
-    )
+    "Android 网络接口由 ConnectivityManager 提供。请在上层选择具体网络，不再将 Linux /proc/net/route 的空结果误报为无物理网络。".into()
 }
 
-fn probe(addr: SocketAddr) -> Result<String, String> {
+fn probe(addr: SocketAddr, network_handle: u64) -> Result<String, String> {
     let start = Instant::now();
-    netif::connect(&addr, Duration::from_secs(3))
+    android_network::connect(addr, network_handle, Duration::from_secs(3))
         .map_err(|e| format!("{addr} → TCP 连接失败：{e}"))?;
     Ok(format!("{addr} → TCP 443 可连接（{} ms）", start.elapsed().as_millis()))
 }
@@ -60,7 +42,7 @@ fn google_probe() -> String {
     }
     let mut errors = Vec::new();
     for addr in addresses {
-        match probe(addr) {
+        match probe(addr, 0) {
             Ok(message) => return format!("{message}\n尚未验证 HTTPS、Drive API 或下载。"),
             Err(error) => errors.push(error),
         }
@@ -100,6 +82,7 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeProbeIp(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     input: JString<'_>,
+    network_handle: jlong,
 ) -> jstring {
     let value: String = match env.get_string(&input) {
         Ok(value) => value.into(),
@@ -107,7 +90,7 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeProbeIp(
     };
     let value = value.trim();
     let result = match value.parse::<IpAddr>() {
-        Ok(ip) => probe(SocketAddr::new(ip, 443))
+        Ok(ip) => probe(SocketAddr::new(ip, 443), network_handle as u64)
             .unwrap_or_else(|err| err),
         Err(_) => "无效的 IPv4 / IPv6 地址。".into(),
     };

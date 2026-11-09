@@ -47,3 +47,13 @@ those crates directly. The desktop and CLI builds remain unchanged.
 4. Integrate native Android OAuth and safely protected credentials.
 5. Add Drive browsing, storage access framework, foreground download service,
    notification controls, pause/resume and integrity verification.
+
+
+## Milestone 2: Android per-network routing diagnostics
+
+- Android ConnectivityManager now lists VPN, Wi-Fi, cellular and other networks with interface and DNS details.
+- Selecting a network passes its Network.getNetworkHandle() to Rust; android_setsocknetwork() binds the native TCP socket before connect.
+- Tests Cloudflare 1.1.1.1:443 as a reference, plus up to two IPv4 and two IPv6 addresses returned by system or selected-network DNS for www.googleapis.com.
+- A refused bind never silently falls back to VPN. The system-default option deliberately remains unbound.
+- VPNs must enable allowBypass; Android lockdown may prohibit direct traffic. A TCP success does not confirm TLS, Google Drive API, or actual downloads.
+- This is still a diagnostic APK, not a downloader; the libaria2 NDK port is the next development step.

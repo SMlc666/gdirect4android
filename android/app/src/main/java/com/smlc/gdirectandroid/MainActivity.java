@@ -5,189 +5,250 @@ import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.net.ConnectivityManager;
+import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.os.Bundle;
 import android.text.InputType;
-import android.view.View;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.TextView;
-
+import java.net.Inet4Address;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/**
- * The Android bootstrap: real JNI calls into the shared gdirect Rust network code.
- * This is a network diagnostic milestone, not yet a Drive file manager.
- */
+/** Diagnostics: Android selects a Network; Rust binds the TCP socket via NDK. */
 public final class MainActivity extends Activity {
     private static final int INK = Color.rgb(24, 39, 65);
     private static final int BLUE = Color.rgb(42, 92, 194);
     private static final int MUTED = Color.rgb(91, 106, 129);
-    private static final boolean NATIVE_LOADED;
-    private static final String NATIVE_ERROR;
-
+    private static final boolean LOADED;
+    private static final String LOAD_ERROR;
     static {
-        boolean loaded = false;
+        boolean ok = false;
         String error = "";
         try {
             System.loadLibrary("gdirect_android");
-            loaded = true;
-        } catch (UnsatisfiedLinkError e) {
-            error = e.toString();
+            ok = true;
+        } catch (UnsatisfiedLinkError ex) {
+            error = ex.toString();
         }
-        NATIVE_LOADED = loaded;
-        NATIVE_ERROR = error;
+        LOADED = ok;
+        LOAD_ERROR = error;
+    }
+    private static native String nativeVersion();
+    private static native String nativeProbeIp(String ip, long networkHandle);
+
+    private static final class Choice {
+        final Network network; // null means system default (potentially VPN).
+        final long handle;
+        final String title;
+        Choice(Network network, String title) {
+            this.network = network;
+            this.handle = network == null ? 0L : network.getNetworkHandle();
+            this.title = title;
+        }
+        @Override public String toString() { return title; }
     }
 
-    private static native String nativeVersion();
-    private static native String nativeNetworkStatus();
-    private static native String nativeProbeGoogle();
-    private static native String nativeProbeIp(String ip);
-
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final List<Choice> choices = new ArrayList<>();
+    private ConnectivityManager cm;
+    private Spinner spinner;
+    private TextView details;
     private TextView result;
     private Button googleButton;
     private Button ipButton;
+    private Button refreshButton;
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
         ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
         scroll.setBackgroundColor(Color.rgb(247, 249, 255));
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        int padding = dp(22);
-        root.setPadding(padding, padding, padding, padding);
+        root.setPadding(dp(22), dp(22), dp(22), dp(22));
         scroll.addView(root);
 
-        TextView title = addText(root, "gdirect for Android", 27, INK);
+        TextView title = text(root, "gdirect for Android", 27, INK);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
-        addText(root, "Rust / Android · Milestone 1", 14, BLUE);
-        addText(root,
-            "这一版用来验证 APK、JNI 和原项目的 Rust 网络代码。账号登录、文件浏览、libaria2 下载与真正的 VPN 绕过尚未实现。",
-            15, MUTED);
+        text(root, "Milestone 2 · Android 网络选择 / Rust Socket 绑定", 14, BLUE);
+        text(root, "选择系统默认、Wi-Fi 或移动网络，分别测试 Google。物理网卡不再依赖 Linux 路由表。", 15, MUTED);
+        text(root, LOADED ? nativeVersion() : "原生库加载失败：" + LOAD_ERROR,
+            13, LOADED ? BLUE : Color.RED);
 
-        TextView nativeLabel = addText(root,
-            NATIVE_LOADED ? nativeVersion() : "原生库加载失败：" + NATIVE_ERROR,
-            13, NATIVE_LOADED ? BLUE : Color.RED);
-        nativeLabel.setTextIsSelectable(true);
-
-        addText(root, "Android 网络", 18, INK).setPadding(0, dp(18), 0, dp(5));
-        TextView androidStatus = addText(root, androidNetworkStatus(), 14, MUTED);
-        androidStatus.setTextIsSelectable(true);
-
-        addText(root, "Rust 网络诊断", 18, INK).setPadding(0, dp(17), 0, dp(5));
-        googleButton = addButton(root, "检测 Google TCP 连通性");
+        text(root, "网络选择", 18, INK);
+        spinner = new Spinner(this);
+        root.addView(spinner);
+        details = text(root, "", 13, MUTED);
+        details.setTextIsSelectable(true);
+        refreshButton = button(root, "刷新 Android 网络");
+        googleButton = button(root, "Google DNS + TCP 连通性测试");
+        text(root, "指定 Google IP 测试", 17, INK);
         EditText ipInput = new EditText(this);
-        ipInput.setSingleLine(true);
-        ipInput.setTextSize(15);
-        ipInput.setHint("输入要测试的 Google IPv4 / IPv6 地址");
+        ipInput.setHint("IPv4 或 IPv6 地址");
         ipInput.setInputType(InputType.TYPE_CLASS_TEXT);
-        root.addView(ipInput, new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-        ipButton = addButton(root, "测试指定 IP 的 443 端口");
-
-        result = addText(root, "点击上方按钮进行测试。仅检测 TCP，不能证明 Drive API 或文件下载已可用。", 14, INK);
+        ipInput.setSingleLine(true);
+        root.addView(ipInput);
+        ipButton = button(root, "Rust 连接指定 IP 的 443 端口");
+        result = text(root, "先刷新网络，选择路径，然后点击测试。绑定失败不会静默回退到 VPN。", 14, INK);
         result.setTextIsSelectable(true);
-        result.setPadding(0, dp(15), 0, dp(12));
 
-        googleButton.setEnabled(NATIVE_LOADED);
-        ipButton.setEnabled(NATIVE_LOADED);
-        googleButton.setOnClickListener(view -> runProbe(() ->
-            nativeNetworkStatus() + "\n\n" + nativeProbeGoogle()));
-        ipButton.setOnClickListener(view -> {
-            final String ip = ipInput.getText().toString().trim();
-            if (ip.isEmpty()) {
+        refreshButton.setOnClickListener(v -> refresh());
+        googleButton.setEnabled(LOADED);
+        ipButton.setEnabled(LOADED);
+        googleButton.setOnClickListener(v -> {
+            Choice choice = selected();
+            if (choice != null) probe(() -> googleReport(choice));
+        });
+        ipButton.setOnClickListener(v -> {
+            Choice choice = selected();
+            String address = ipInput.getText().toString().trim();
+            if (choice == null) return;
+            if (address.isEmpty()) {
                 result.setText("请先输入 IP 地址。");
                 return;
             }
-            runProbe(() -> nativeNetworkStatus() + "\n\n" + nativeProbeIp(ip));
+            probe(() -> choice.title + "\n" + nativeProbeIp(address, choice.handle));
         });
         setContentView(scroll);
+        refresh();
     }
 
-    private interface Probe { String execute(); }
+    private Choice selected() {
+        int index = spinner.getSelectedItemPosition();
+        return index >= 0 && index < choices.size() ? choices.get(index) : null;
+    }
 
-    private void runProbe(Probe probe) {
+    @SuppressWarnings("deprecation") // Explicit refresh only; service will use NetworkCallback.
+    private void refresh() {
+        Choice old = selected();
+        long oldHandle = old == null ? 0L : old.handle;
+        choices.clear();
+        choices.add(new Choice(null, "系统默认（可能经过 VPN）"));
+        StringBuilder summary = new StringBuilder();
+        if (cm != null) {
+            Network active = cm.getActiveNetwork();
+            summary.append("默认活动网络：").append(active).append("\n");
+            for (Network network : cm.getAllNetworks()) {
+                NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+                if (caps == null) continue;
+                String kind;
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) kind = "VPN";
+                else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) kind = "Wi-Fi";
+                else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) kind = "移动数据";
+                else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) kind = "以太网";
+                else kind = "其他网络";
+                String label = kind + (network.equals(active) ? " · 活动" : "") + " · " + network;
+                choices.add(new Choice(network, label));
+                LinkProperties link = cm.getLinkProperties(network);
+                summary.append(label);
+                if (link != null) {
+                    summary.append("\n  接口：").append(link.getInterfaceName())
+                           .append("  DNS：").append(link.getDnsServers());
+                }
+                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                    summary.append("\n  注意：无 INTERNET 标志");
+                }
+                summary.append("\n");
+            }
+        }
+        ArrayAdapter<Choice> adapter = new ArrayAdapter<>(
+            this, android.R.layout.simple_spinner_item, choices);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinner.setAdapter(adapter);
+        for (int i = 0; i < choices.size(); i++) {
+            if (choices.get(i).handle == oldHandle) { spinner.setSelection(i); break; }
+        }
+        details.setText(summary.toString());
+    }
+
+    private String googleReport(Choice choice) {
+        StringBuilder out = new StringBuilder();
+        out.append("路径：").append(choice.title)
+           .append("\n绑定策略：").append(choice.handle == 0 ? "系统默认" : "NDK 指定 Network")
+           .append("\n\n参考地址 1.1.1.1:443：\n")
+           .append(nativeProbeIp("1.1.1.1", choice.handle))
+           .append("\n\nwww.googleapis.com DNS：\n");
+        InetAddress[] addresses;
+        try {
+            addresses = choice.network == null
+                ? InetAddress.getAllByName("www.googleapis.com")
+                : choice.network.getAllByName("www.googleapis.com");
+        } catch (Exception ex) {
+            return out.append("DNS 失败：").append(ex).toString();
+        }
+        int v4 = 0, v6 = 0;
+        for (int family = 4; family <= 6; family += 2) {
+            for (InetAddress address : addresses) {
+                if (family == 4 && !(address instanceof Inet4Address)) continue;
+                if (family == 6 && !(address instanceof Inet6Address)) continue;
+                if (family == 4 && v4 >= 2) continue;
+                if (family == 6 && v6 >= 2) continue;
+                if (family == 4) v4++; else v6++;
+                out.append("\n").append(nativeProbeIp(address.getHostAddress(), choice.handle));
+            }
+        }
+        if (v4 == 0) out.append("\n无 IPv4 地址");
+        if (v6 == 0) out.append("\n无 IPv6 地址");
+        return out.append("\n\nTCP 成功不代表 TLS / Drive API / 下载成功。")
+                  .append("\n若绑定失败，请检查 VPN allowBypass 或始终开启 VPN 的阻止非 VPN 连接设置。")
+                  .toString();
+    }
+
+    private interface Probe { String execute() throws Exception; }
+    private void probe(Probe work) {
         googleButton.setEnabled(false);
         ipButton.setEnabled(false);
-        result.setText("Rust 正在测试网络连接…");
+        refreshButton.setEnabled(false);
+        result.setText("正在检测，请稍候…");
         worker.execute(() -> {
             String output;
-            try {
-                output = probe.execute();
-            } catch (Exception e) {
-                output = "诊断失败：" + e;
-            } catch (LinkageError e) {
-                output = "原生桥接错误：" + e;
-            }
-            final String completed = output;
+            try { output = work.execute(); }
+            catch (Exception ex) { output = "检测失败：" + ex; }
+            catch (LinkageError ex) { output = "JNI 错误：" + ex; }
+            final String report = output;
             runOnUiThread(() -> {
-                if (isFinishing() || isDestroyed()) return;
-                result.setText(completed);
-                googleButton.setEnabled(true);
-                ipButton.setEnabled(true);
+                if (isDestroyed() || isFinishing()) return;
+                result.setText(report);
+                googleButton.setEnabled(LOADED);
+                ipButton.setEnabled(LOADED);
+                refreshButton.setEnabled(true);
             });
         });
     }
 
-    private String androidNetworkStatus() {
-        ConnectivityManager cm =
-            (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-        if (cm == null) return "ConnectivityManager 不可用";
-        Network active = cm.getActiveNetwork();
-        if (active == null) return "没有活动网络";
-        NetworkCapabilities caps = cm.getNetworkCapabilities(active);
-        if (caps == null) return "无法读取活动网络能力";
-        StringBuilder out = new StringBuilder();
-        out.append("当前网络：");
-        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) out.append("VPN / TUN ");
-        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) out.append("Wi-Fi ");
-        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) out.append("移动数据 ");
-        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) out.append("以太网 ");
-        out.append("\n可访问互联网标志：")
-            .append(caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET));
-        out.append("\n注意：这里显示的是系统默认网络，不代表 Rust 已绕开 TUN。");
-        return out.toString();
+    private TextView text(LinearLayout root, String value, int sp, int color) {
+        TextView tv = new TextView(this);
+        tv.setText(value);
+        tv.setTextColor(color);
+        tv.setTextSize(sp);
+        tv.setPadding(0, dp(5), 0, dp(8));
+        root.addView(tv);
+        return tv;
     }
-
-    private TextView addText(LinearLayout parent, String value, int sp, int color) {
-        TextView view = new TextView(this);
-        view.setText(value);
-        view.setTextSize(sp);
-        view.setTextColor(color);
-        view.setPadding(0, dp(5), 0, dp(7));
-        parent.addView(view, new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT));
-        return view;
+    private Button button(LinearLayout root, String title) {
+        Button btn = new Button(this);
+        btn.setText(title);
+        btn.setAllCaps(false);
+        btn.setTextColor(Color.WHITE);
+        btn.setBackgroundTintList(ColorStateList.valueOf(BLUE));
+        root.addView(btn);
+        return btn;
     }
-
-    private Button addButton(LinearLayout parent, String text) {
-        Button button = new Button(this);
-        button.setText(text);
-        button.setAllCaps(false);
-        button.setTextColor(Color.WHITE);
-        button.setBackgroundTintList(ColorStateList.valueOf(BLUE));
-        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT);
-        layout.topMargin = dp(9);
-        parent.addView(button, layout);
-        return button;
-    }
-
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
-
-    @Override
-    protected void onDestroy() {
+    @Override protected void onDestroy() {
         worker.shutdownNow();
         super.onDestroy();
     }

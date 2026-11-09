@@ -202,3 +202,56 @@ those crates directly. The desktop and CLI builds remain unchanged.
    test users is different from publishing; public availability may require
    restricted-scope verification. The app never embeds a client secret.
 
+
+
+## v0.9.1-alpha.1 — optional desktop OAuth + full Google Drive scope
+
+**This section supersedes the previous native Android OAuth login setup.**
+The opt-in credential type is now **Desktop app**. Import the JSON downloaded
+from Google Cloud Console (a file containing an \`installed\` object) via the
+Android document picker, or paste its JSON into the configuration field.
+Neither the desktop client ID/secret nor tokens are shipped in the APK.
+
+- OAuth permission requested: \`https://www.googleapis.com/auth/drive\`,
+  which grants **full access** to files in the authorized Google Drive
+  account, including reading, creating, editing and deleting them. This is a
+  **restricted** scope. The UI currently exposes browse, search, download,
+  create folder, rename and move to trash; full OAuth permission does not
+  mean all Drive API methods are already implemented in this UI.
+- Opens the **external default browser**, NEVER an embedded WebView.
+- OAuth Desktop-client loopback redirect binds only \`127.0.0.1\` with a random
+  port, PKCE S256, cryptographic CSRF \`state\`, 3-minute deadline and bounded
+  callback request size. No manual OOB copy/paste flow, no custom URI scheme.
+- The authorization code is exchanged via \`https://oauth2.googleapis.com/token\`;
+  refresh tokens and imported desktop-client credentials are encrypted with
+  Android Keystore AES-256-GCM and private preferences. Access tokens stay
+  only in RAM and expire/refresh as needed; revoke clears the local token
+  even if the remote revoke endpoint is unavailable. No token logs.
+- Authorization/browser/Drive JSON API calls follow **system default
+  network**, potentially a VPN. The original aria2 downloads continue to
+  use the explicit Android-selected network handle.
+- Android/Desktop loopback is **experimental and NOT Google's recommended
+  Android authorization integration**. Google officially keeps loopback
+  supported for OAuth Desktop *client types*, but recommends native Google
+  Identity Services on Android. If the browser rejects this configuration,
+  switch to the native Android client flow instead of weakening PKCE/state.
+- A registered desktop OAuth app requesting the restricted \`drive\` scope may
+  trigger an unverified app warning, testing-user restrictions or further
+  verification for public distribution.
+
+### Setup
+
+1. Enable Drive API and create/configure the OAuth consent screen in Google Cloud.
+   If status is Testing, add the personal Google account as a test user.
+2. Create a new OAuth client type **Desktop app**, download its JSON.
+3. Install the alpha APK. In the new Drive section, tap **从本机文件导入
+   Desktop OAuth JSON**, then **使用外部浏览器授权完整 Drive 权限**.
+4. On return to the app, browse root folders and try a small binary download
+   with libaria2. Long-press entries to rename or move to trash.
+5. No package-name/SHA-1 registration is required for this desktop OAuth client
+   variant, unlike the native Android client in previous alpha builds.
+
+Sources:
+- https://developers.google.com/identity/protocols/oauth2/native-app
+- https://developers.google.com/identity/protocols/oauth2/resources/loopback-migration
+- https://developers.google.com/workspace/drive/api/guides/api-specific-auth

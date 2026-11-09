@@ -45,6 +45,7 @@ public final class MainActivity extends Activity {
         boolean ok = false;
         String error = "";
         try {
+            System.loadLibrary("c++_shared");
             System.loadLibrary("gdirect_android");
             ok = true;
         } catch (UnsatisfiedLinkError ex) {
@@ -149,7 +150,14 @@ public final class MainActivity extends Activity {
         downloadStatusButton.setOnClickListener(v -> {
             if (LOADED) result.setText(nativeDownloadProgress());
         });
-        drivePanel = new DrivePanel(this, (entry, token) -> {
+        drivePanel = new DrivePanel(this, () -> {
+            Choice choice = selected();
+            return choice == null ? null : choice.network;
+        }, (entry, token) -> {
+            if (!LOADED) {
+                result.setText("原生 libaria2 未加载，无法执行文件下载：" + LOAD_ERROR);
+                return;
+            }
             Choice choice = selected();
             if (choice == null) return;
             pendingDriveFile = entry;

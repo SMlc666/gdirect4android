@@ -321,3 +321,26 @@ registration, but it remains essential to Android APK update compatibility.
 
 
 <!-- Rebuild requested after one-time stable signing Secrets configuration. -->
+
+
+## v0.9.1-alpha.3 — fixing Android libc++ RTTI load and Drive API routing
+
+- Physical-device failure `dlopen failed: cannot locate symbol "_ZTISt12length_error"`
+  indicated that the previous JNI library did not bring along a complete
+  native C++ exception/RTTI ABI. Link NDK's `libc++_shared.so`, ship it in
+  `lib/arm64-v8a/`, and load it before `libgdirect_android.so`.
+  CI now checks the JNI dependency, required typeinfo symbol in libc++, both
+  libraries in APK, and fails link on undefined references. Device validation
+  remains necessary.
+- Drive API metadata operations (file listing, search, new folder, rename,
+  move to trash) now use Android `Network.openConnection(URL)` with the
+  **selected** physical Wi-Fi/cellular/VPN. For the system-default choice,
+  operations continue via the system default network. Explicit selections
+  do NOT fall back to VPN if DNS/HTTPS fails.
+- OAuth browser and the subsequent token exchange/refresh are still performed
+  through the system/default route; they are not controlled by the network
+  picker. Native libaria2 download sockets still use the selected network.
+- Unlike the libaria2 pinned Google IP path, per-network Java HTTPS uses the
+  selected network's **DNS**, which can yield Google IPs that time out in
+  the user's area. Report the error instead of silently routing via VPN.
+

@@ -16,7 +16,7 @@ fn main() {
         .file(manifest.join("src/aria2_android_bridge.cc"))
         .include(aria.join("include"))
         .include(manifest.join("../../vendor"))
-        .cpp_link_stdlib("c++_static")
+        .cpp_link_stdlib("c++_shared")
         .compile("gdirect_bridge_android");
     println!("cargo:rustc-link-search=native={}", aria.join("lib").display());
     println!("cargo:rustc-link-search=native={}", ssl.join("lib").display());
@@ -25,4 +25,6 @@ fn main() {
     println!("cargo:rustc-link-lib=static=crypto");
     println!("cargo:rustc-link-lib=android");
     println!("cargo:rustc-link-lib=log");
+    // Supply the NDK libc++ exception / RTTI runtime at the JNI link step.
+    println!("cargo:rustc-link-lib=dylib=c++_shared");
 }

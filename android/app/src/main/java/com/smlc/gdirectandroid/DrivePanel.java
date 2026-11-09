@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Color;
+import android.net.Network;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -55,6 +57,7 @@ public final class DrivePanel extends LinearLayout {
     }
 
     private final Activity activity;
+    private final Supplier<Network> chosenNetwork;
     private final DownloadHandler onDownload;
     private final DesktopOAuth authorization;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -67,14 +70,17 @@ public final class DrivePanel extends LinearLayout {
     private LinearLayout listing;
     private boolean destroyed = false;
 
-    public DrivePanel(Activity activity, DownloadHandler onDownload) {
+    public DrivePanel(Activity activity, Supplier<Network> chosenNetwork, DownloadHandler onDownload) {
         super(activity);
         this.activity = activity;
+        this.chosenNetwork = chosenNetwork;
         this.onDownload = onDownload;
         this.authorization = new DesktopOAuth(activity);
         setOrientation(VERTICAL);
         setPadding(0, 20, 0, 24);
         title("Google Drive · 桌面 OAuth + 完整权限（试验性）");
+        title("Drive 文件列表、搜索、修改遵照上方网络选择；浏览器 OAuth 和 Token 请求仍走系统默认网络。"
+            + " 选 Wi-Fi 后如 DNS/HTTPS 失败会直接报错，不回退到 VPN。");
         status = title(
             "权限：完整 Google Drive（读取、创建、修改、移至回收站）。"
             + "\n桌面客户端的 127.0.0.1 回调不是 Google 推荐的 Android 授权方式。"
@@ -215,12 +221,15 @@ public final class DrivePanel extends LinearLayout {
     }
 
     private void list(boolean loadNext) {
+        final Network apiNetwork = chosenNetwork.get();
+        final String routeLabel = apiNetwork == null ? "系统默认（可能 VPN）"
+            : "Network " + apiNetwork.toString();
         final String pageToken = loadNext ? nextPageToken : null;
         withToken(token -> {
             final String folder = activeFolder;
             final String query = search.getText().toString().trim();
             if (!loadNext) listing.removeAllViews();
-            status.setText("正在读取 Google Drive 文件列表…");
+            status.setText("正在读取 Google Drive 文件列表… 路径：" + routeLabel);
             io.execute(() -> {
                 try {
                     StringBuilder q = new StringBuilder();
@@ -234,7 +243,7 @@ public final class DrivePanel extends LinearLayout {
                         + "&fields=" + enc("nextPageToken,incompleteSearch,files(id,name,mimeType,size,md5Checksum)")
                         + "&q=" + enc(q.toString())
                         + (pageToken == null ? "" : "&pageToken=" + enc(pageToken));
-                    JSONObject data = apiGet(u, token);
+                    JSONObject data = apiGet(u, token, apiNetwork);
                     JSONArray files = data.optJSONArray("files");
                     List<DriveFile> entries = new ArrayList<>();
                     if (files != null) {
@@ -245,13 +254,15 @@ public final class DrivePanel extends LinearLayout {
                         if (destroyed || !folder.equals(activeFolder)) return;
                         nextPageToken = nextToken.isEmpty() ? null : nextToken;
                         location.setText("目录 ID：" + activeFolder + " · 本页 " + entries.size() + " 项");
-                        status.setText("列表读取完成。" + (nextPageToken == null ? "" : " 还有下一页。"));
+                        status.setText("列表读取完成（" + routeLabel + "）。"
+                            + (nextPageToken == null ? "" : " 还有下一页。"));
                         for (DriveFile entry : entries) addEntry(entry);
                     });
                 } catch (Exception e) {
                     activity.runOnUiThread(() -> {
                         if (destroyed) return;
-                        status.setText("Drive API 请求失败：" + e.getMessage());
+                        status.setText("Drive API 请求失败（" + routeLabel
+                            + "；不会回退 VPN）：" + e.getMessage());
                     });
                 }
             });
@@ -369,11 +380,14 @@ public final class DrivePanel extends LinearLayout {
     }
 
     private void performWrite(String action, String method, String endpoint, JSONObjectBody data) {
+        final Network apiNetwork = chosenNetwork.get();
+        final String routeLabel = apiNetwork == null ? "系统默认（可能 VPN）"
+            : "Network " + apiNetwork.toString();
         withToken(token -> {
-            status.setText("Google Drive 正在执行：" + action + "…");
+            status.setText("Google Drive 正在执行：" + action + "… 路径：" + routeLabel);
             io.execute(() -> {
                 try {
-                    apiRequest(endpoint, token, method, data.serialize());
+                    apiRequest(endpoint, token, method, data.serialize(), apiNetwork);
                     activity.runOnUiThread(() -> {
                         if (destroyed) return;
                         status.setText("✅ " + action + "成功。正在刷新列表。");
@@ -381,16 +395,22 @@ public final class DrivePanel extends LinearLayout {
                     });
                 } catch (Exception error) {
                     activity.runOnUiThread(() -> {
-                        if (!destroyed) status.setText(action + "失败：" + error.getMessage());
+                        if (!destroyed) status.setText(action + "失败（" + routeLabel
+                            + "；不会回退 VPN）：" + error.getMessage());
                     });
                 }
             });
         });
     }
 
-    private static JSONObject apiRequest(String raw, String token, String method, JSONObject body)
+    private static JSONObject apiRequest(
+            String raw, String token, String method, JSONObject body, Network apiNetwork)
             throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) new URL(raw).openConnection();
+        // HTTPS URL keeps the original hostname and certificate verification;
+        // per-Network DNS/connection is used for explicit Wi-Fi/cellular/VPN.
+        URL url = new URL(raw);
+        HttpURLConnection connection = (HttpURLConnection) (apiNetwork == null
+            ? url.openConnection() : apiNetwork.openConnection(url));
         connection.setRequestMethod("PATCH".equals(method) ? "POST" : method);
         if ("PATCH".equals(method)) connection.setRequestProperty("X-HTTP-Method-Override", "PATCH");
         connection.setConnectTimeout(15000);
@@ -433,8 +453,9 @@ public final class DrivePanel extends LinearLayout {
         return URLEncoder.encode(raw, "UTF-8");
     }
 
-    private static JSONObject apiGet(String raw, String token) throws Exception {
-        return apiRequest(raw, token, "GET", null);
+    private static JSONObject apiGet(String raw, String token, Network apiNetwork)
+            throws Exception {
+        return apiRequest(raw, token, "GET", null, apiNetwork);
     }
 
     public void shutdown() {

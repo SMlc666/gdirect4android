@@ -33,11 +33,14 @@ jobs:
 
       # ubuntu-latest already includes Android SDK command-line tools.
       # setup-android@v3 currently fails by requesting the removed 'tools' package.
-      - name: Verify Android SDK tools
+      - name: Add preinstalled SDK tools to PATH
+        shell: bash
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          command -v sdkmanager
-          sdkmanager --version
+          set -euo pipefail
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort -V | tail -n1)"
+          test -n "$SDKMANAGER"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          "$SDKMANAGER" --version
 
       - name: Install Android SDK and NDK
         run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"

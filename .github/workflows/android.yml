@@ -56,6 +56,9 @@ jobs:
         with:
           workspaces: android/native -> android/native/target
 
+      - name: Unit-test Android Rust HTTP parser on host
+        run: cargo test --manifest-path android/native/Cargo.toml --lib
+
       - name: Build Rust JNI library for arm64-v8a
         shell: bash
         run: |

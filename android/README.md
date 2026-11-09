@@ -100,3 +100,23 @@ those crates directly. The desktop and CLI builds remain unchanged.
   native Network bindings into libaria2's patched socket layer, cross-compile
   libaria2 with NDK/OpenSSL, and add authenticated Google Drive downloads.
 
+
+
+## Milestone 5 — HTTP framing and TLS close_notify correctness
+
+- The Android v0.4 transfer test falsely failed on all three real Google endpoints
+  when Google closed TCP without a TLS close_notify. The code incorrectly read
+  to connection closure even when HTTP already supplied an explicit body length.
+- v0.5 tracks Content-Length and Transfer-Encoding: chunked; it stops as soon
+  as the HTTP message is framed completely. A 1 MiB capped sample is labeled
+  as partial rather than a completed document.
+- Unexpected TLS EOF is *not* globally ignored. Incomplete length-delimited,
+  incomplete chunked, or uncleanly closed close-delimited responses remain
+  failures, with any observed HTTP status and body bytes reported.
+- The test reports content type, framing, actual payload bytes, and total
+  TCP+TLS+HTTP elapsed time. It does not save any data.
+- The Android Actions workflow now runs the native Rust unit tests on Linux
+  before cross-compiling the arm64-v8a JNI library.
+- The stand-alone host unit test build has an Android-only NDK binding gate:
+  Linux tests do not attempt to link libandroid. Android builds continue using
+  android_setsocknetwork before TCP connect.

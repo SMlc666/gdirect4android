@@ -103,11 +103,12 @@ fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64) -> 
             let len = fs::metadata(&output).map(|m| m.len()).unwrap_or_default();
             if len > 0 {
                 return format!(
-                    "OK\n原版 libaria2 1.37.0 下载成功\n实际 IP：{ip}\n实际文件：{len} 字节\n设定：8 条 HTTP 分段连接"
+                    "OK\n原版 libaria2 1.37.0 下载成功\n实际 IP：{}\n实际文件：{len} 字节\n设定：8 条 HTTP 分段连接"
+                    ip.to_string_lossy()
                 );
             }
         }
-        failures.push(format!("{ip}：libaria2 状态码 {result}"));
+        failures.push(format!("{}：libaria2 状态码 {result}", ip.to_string_lossy()));
     }
     format!("ERR\nlibaria2 下载失败（3 个 Google IP 均未成功）：\n{}", failures.join("\n"))
 }

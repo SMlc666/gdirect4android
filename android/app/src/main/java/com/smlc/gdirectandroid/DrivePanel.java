@@ -77,6 +77,8 @@ public final class DrivePanel extends LinearLayout {
     private EditText search;
     private EditText oauthJson;
     private LinearLayout listing;
+    private com.google.android.material.progressindicator.LinearProgressIndicator loading;
+    private final UserPrefs preferences;
     private boolean destroyed = false;
 
     public DrivePanel(
@@ -91,10 +93,15 @@ public final class DrivePanel extends LinearLayout {
         this.speedPriority = speedPriority;
         this.onDownload = onDownload;
         this.authorization = new DesktopOAuth(activity);
+        this.preferences = new UserPrefs(activity);
         setOrientation(VERTICAL);
         setPadding(0, 0, 0, 8);
         title("Google Drive 账号");
         title("直接浏览云端文件；文件列表和下载均使用线路页面选定的网络及优选 IP。");
+        loading = new com.google.android.material.progressindicator.LinearProgressIndicator(activity);
+        loading.setIndeterminate(true);
+        loading.setVisibility(GONE);
+        addView(loading,new LinearLayout.LayoutParams(-1,px(5)));
         status = title(authorization.configured()
             ? "已导入桌面 OAuth 客户端。可以浏览文件，必要时重新授权。"
             : "首次使用：展开账号设置，导入自己的桌面 OAuth 客户端 JSON，然后授权。");
@@ -277,6 +284,7 @@ public final class DrivePanel extends LinearLayout {
             final String query = search.getText().toString().trim();
             if (!loadNext) listing.removeAllViews();
             status.setText("正在读取 Google Drive 文件列表… 路径：" + routeLabel);
+            loading.setVisibility(VISIBLE);
             io.execute(() -> {
                 try {
                     StringBuilder q = new StringBuilder();
@@ -301,6 +309,7 @@ public final class DrivePanel extends LinearLayout {
                         if (destroyed || !folder.equals(activeFolder)) return;
                         nextPageToken = nextToken.isEmpty() ? null : nextToken;
                         location.setText("目录 ID：" + activeFolder + " · 本页 " + entries.size() + " 项");
+                        loading.setVisibility(GONE);
                         status.setText("列表读取完成（" + routeLabel
                             + " · Google IP " + lastVerifiedIp + "）。"
                             + (nextPageToken == null ? "" : " 还有下一页。"));
@@ -309,6 +318,7 @@ public final class DrivePanel extends LinearLayout {
                 } catch (Exception e) {
                     activity.runOnUiThread(() -> {
                         if (destroyed) return;
+                        loading.setVisibility(GONE);
                         status.setText("Drive API 请求失败（" + routeLabel
                             + "；不会回退 VPN）：" + e.getMessage());
                     });
@@ -355,6 +365,13 @@ public final class DrivePanel extends LinearLayout {
         LinearLayout.LayoutParams itemParams=new LinearLayout.LayoutParams(-1,-2);
         itemParams.bottomMargin=px(8);
         listing.addView(item,itemParams);
+        if (preferences.animations()) {
+            item.setAlpha(0f);
+            item.setTranslationY(px(10));
+            item.animate().alpha(1f).translationY(0f)
+                .setStartDelay(Math.min(250L, listing.getChildCount()*18L))
+                .setDuration(230L).start();
+        }
         item.setOnClickListener(v -> {
             if (file.folder()) {
                 folders.push(activeFolder);

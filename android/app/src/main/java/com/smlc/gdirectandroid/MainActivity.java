@@ -70,7 +70,7 @@ public final class MainActivity extends AppCompatActivity {
     private static native String nativeScanGoogle(long networkHandle);
     private static native String nativeOptimizeGoogle(
         long networkHandle, int maxCandidates, int workers, int speedMode);
-    private static native String nativeGoogleScanProgress();
+    static native String nativeGoogleScanProgress();
     private static native void nativeCancelGoogleScan();
     static native String nativeDriveApiRequest(
         String url, String method, String accessToken, String jsonBody,
@@ -104,7 +104,7 @@ public final class MainActivity extends AppCompatActivity {
     private final Handler ticker = new Handler(Looper.getMainLooper());
     private final Runnable updateUi = new Runnable() {
         @Override public void run() {
-            if (shell != null) shell.refreshTransfers();
+            if (shell != null) { shell.refreshTransfers(); shell.refreshScan(); }
             ticker.postDelayed(this, 1000L);
         }
     };

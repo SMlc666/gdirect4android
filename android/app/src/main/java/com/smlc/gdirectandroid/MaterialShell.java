@@ -63,6 +63,8 @@ public final class MaterialShell {
     private LinearLayout history;
     private TextView currentName, currentDetail, currentState;
     private LinearProgressIndicator progress;
+    private LinearProgressIndicator scanProgressBar;
+    private TextView scanProgressLabel;
     private TextView footnote;
     private int currentPage = -1;
     private String lastHistoryKey = "";
@@ -320,6 +322,14 @@ public final class MaterialShell {
         move(optimized,slots.scanPreset);
         move(optimized,slots.ranking);
         move(optimized,slots.scan);
+        scanProgressBar = new LinearProgressIndicator(activity);
+        scanProgressBar.setTrackCornerRadius(dp(4));
+        scanProgressBar.setVisibility(View.GONE);
+        optimized.addView(scanProgressBar,new LinearLayout.LayoutParams(-1,dp(5)));
+        scanProgressLabel = text("",12,false);
+        scanProgressLabel.setTextColor(onSurfaceVariant);
+        scanProgressLabel.setVisibility(View.GONE);
+        optimized.addView(scanProgressLabel);
         LinearLayout buttons=new LinearLayout(activity);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
         optimizeButtons(buttons,slots.scanProgress,slots.scanCancel);
@@ -502,6 +512,30 @@ public final class MaterialShell {
             "settings".equals(target)?SETTINGS:FILES;
         navigation.setSelectedItemId(id);
     }
+    /** Live scan progress, without requiring a debug diagnostics button. */
+    public void refreshScan() {
+        if (scanProgressBar == null || scanProgressLabel == null) return;
+        try {
+            JSONObject state = new JSONObject(MainActivity.nativeGoogleScanProgress());
+            boolean running = state.optBoolean("running",false);
+            int checked = state.optInt("checked",0);
+            int good = state.optInt("good",0);
+            int total = state.optInt("total",0);
+            scanProgressBar.setVisibility(running ? View.VISIBLE : View.GONE);
+            scanProgressLabel.setVisibility(running ? View.VISIBLE : View.GONE);
+            if (running) {
+                scanProgressBar.setProgressCompat(
+                    total <= 0 ? 0 : Math.max(0,Math.min(100,checked*100/total)),
+                    prefs.animations());
+                scanProgressLabel.setText("已验证 "+checked+" / "+total
+                    +" · 可用 "+good+" 个 · 正在优选 Google 前端…");
+            }
+        } catch (LinkageError | Exception ignored) {
+            scanProgressBar.setVisibility(View.GONE);
+            scanProgressLabel.setVisibility(View.GONE);
+        }
+    }
+
     public void refreshTransfers() {
         if(currentName==null||history==null)return;
         TransferService.Snapshot s=TransferService.snapshot();
@@ -510,6 +544,10 @@ public final class MaterialShell {
             lastTransferSignature=signature;
             boolean active="running".equals(s.status)||"saving".equals(s.status)
                 ||"cancelling".equals(s.status);
+            if (navigation != null) {
+                if (active) navigation.getOrCreateBadge(TRANSFERS).setVisible(true);
+                else navigation.removeBadge(TRANSFERS);
+            }
             currentState.setText(active?"进行中":"completed".equals(s.status)?"已完成":
                 "failed".equals(s.status)?"失败":"cancelled".equals(s.status)?"已取消":"准备就绪");
             currentName.setText(s.name.isEmpty()?"暂无正在进行的任务":s.name);

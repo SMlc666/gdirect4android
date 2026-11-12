@@ -1,5 +1,11 @@
 package com.smlc.gdirectandroid;
 
+import android.animation.ValueAnimator;
+import android.os.Bundle;
+import android.view.animation.PathInterpolator;
+import androidx.transition.TransitionManager;
+import com.google.android.material.transition.MaterialFadeThrough;
+import com.google.android.material.shape.ShapeAppearanceModel;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
@@ -48,10 +54,13 @@ public final class MaterialShell {
     private static final int FILES = 101, TRANSFERS = 102, ROUTES = 103, SETTINGS = 104;
     public static final class Slots {
         public DrivePanel drive;
-        public ScrollView diagnostics;
         public Spinner network, scanPreset, ranking, preferredIp;
-        public View refresh, scan, scanCancel, scanProgress;
+        public View googleDns, googleTls, manualIpInput, manualTcp,
+            manualTls, publicTransfer, publicSave, downloadStatus,
+            downloadCancel;
         public TextView networkDetails, endpointSummary, scanResult;
+
+        public View refresh, scan, scanCancel, scanProgress;
     }
 
     private final AppCompatActivity activity;
@@ -59,7 +68,9 @@ public final class MaterialShell {
     private final Slots slots;
     private final FrameLayout content;
     private final BottomNavigationView navigation;
+    private final MaterialToolbar toolbar;
     private final View[] pages = new View[4];
+    private TextView diagnosticsResult;
     private LinearLayout history;
     private TextView currentName, currentDetail, currentState;
     private LinearProgressIndicator progress;
@@ -71,7 +82,7 @@ public final class MaterialShell {
     private String lastTransferSignature = "";
 
     private int primary, onSurface, surface, onSurfaceVariant, secondaryContainer;
-    public MaterialShell(AppCompatActivity activity, UserPrefs prefs, Slots slots) {
+    public MaterialShell(AppCompatActivity activity, UserPrefs prefs, Slots slots, Bundle restored) {
         this.activity = activity;
         this.prefs = prefs;
         this.slots = slots;
@@ -86,6 +97,7 @@ public final class MaterialShell {
         shell.setBackgroundColor(color(com.google.android.material.R.attr.colorSurfaceContainerLow, surface));
 
         MaterialToolbar bar = new MaterialToolbar(activity);
+        toolbar = bar;
         bar.setTitle("gdirect");
         bar.setSubtitle("Google Drive · Direct");
         bar.setTitleTextAppearance(activity, com.google.android.material.R.style.TextAppearance_Material3_TitleLarge);
@@ -93,9 +105,8 @@ public final class MaterialShell {
         bar.setContentInsetStartWithNavigation(dp(20));
         bar.setPadding(dp(4), dp(4), dp(4), dp(4));
         shell.addView(bar, new LinearLayout.LayoutParams(-1, dp(66)));
-        bar.getMenu().add("设置").setIcon(R.drawable.ic_settings)
-            .setShowAsActionFlags(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS);
-        bar.setOnMenuItemClickListener(item -> { open("settings"); return true; });
+        // Settings belongs to exactly one place: the bottom destination.
+        // No duplicate toolbar gear icon or additional settings navigation.
 
         content = new FrameLayout(activity);
         shell.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -120,14 +131,42 @@ public final class MaterialShell {
         navigation.getMenu().add(Menu.NONE, SETTINGS, 3, "设置")
             .setIcon(R.drawable.ic_settings);
         navigation.setBackgroundColor(surface);
-        navigation.setItemRippleColor(ColorStateList.valueOf(
-            color(com.google.android.material.R.attr.colorPrimaryContainer, secondaryContainer)));
+        // The Material 3 pill is the selection feedback. The old large,
+        // saturated full-cell ripple looked like an opaque flash.
+        navigation.setItemActiveIndicatorEnabled(true);
+        navigation.setItemActiveIndicatorWidth(dp(64));
+        navigation.setItemActiveIndicatorHeight(dp(32));
+        navigation.setItemActiveIndicatorMarginHorizontal(dp(8));
+        navigation.setItemActiveIndicatorShapeAppearance(
+            ShapeAppearanceModel.builder().setAllCornerSizes(dp(18)).build());
+        navigation.setItemActiveIndicatorColor(ColorStateList.valueOf(secondaryContainer));
+        int subtleRipple = Color.argb(22, Color.red(primary),
+            Color.green(primary), Color.blue(primary));
+        navigation.setItemRippleColor(ColorStateList.valueOf(subtleRipple));
+        ColorStateList navigationColors = new ColorStateList(
+            new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
+            new int[]{primary, onSurfaceVariant});
+        navigation.setItemIconTintList(navigationColors);
+        navigation.setItemTextColor(navigationColors);
+        navigation.setItemIconSize(dp(24));
         navigation.setOnItemSelectedListener(item -> {
             showIndex(index(item.getItemId()));
             return true;
         });
         shell.addView(navigation, new LinearLayout.LayoutParams(-1, -2));
+        boolean enteringNewTheme = prefs.consumeThemeMotionPending() && motionEnabled();
+        if (enteringNewTheme) {
+            shell.setAlpha(0f);
+            shell.setScaleX(0.987f);
+            shell.setScaleY(0.987f);
+        }
         activity.setContentView(shell);
+        if (enteringNewTheme) {
+            shell.post(() -> shell.animate()
+                .alpha(1f).scaleX(1f).scaleY(1f).setDuration(380L)
+                .setInterpolator(new PathInterpolator(0.2f,0f,0f,1f))
+                .start());
+        }
         activity.getWindow().setStatusBarColor(surface);
         activity.getWindow().setNavigationBarColor(surface);
         if (Build.VERSION.SDK_INT >= 26) {
@@ -137,8 +176,25 @@ public final class MaterialShell {
             flags = Color.luminance(surface) > 0.50 ? flags | mask : flags & ~mask;
             activity.getWindow().getDecorView().setSystemUiVisibility(flags);
         }
-        open(activity.getIntent() == null ? "files" :
-            activity.getIntent().getStringExtra("open_tab"));
+        // Prefer explicit notification intent, then restored instance state,
+        // then last user-selected destination. Theme changes must not jump
+        // back to the file browser.
+        String requested = activity.getIntent() == null ? null :
+            activity.getIntent().getStringExtra("open_tab");
+        if (requested == null && restored != null) {
+            requested = restored.getString("ui.selected_tab");
+        }
+        if (requested == null) requested = prefs.currentTab();
+        open(requested);
+        for (int i=0; i<pages.length; i++) {
+            if (pages[i] instanceof ScrollView) {
+                final int index=i;
+                final ScrollView scroll = (ScrollView) pages[i];
+                int offset = restored == null ? prefs.scroll(i) :
+                    restored.getInt("ui.scroll_" + i, prefs.scroll(i));
+                if (offset > 0) scroll.post(() -> scroll.scrollTo(0,offset));
+            }
+        }
     }
 
     private int color(int attr, int fallback) {
@@ -387,16 +443,25 @@ public final class MaterialShell {
         themes.addOnButtonCheckedListener((view,id,checked)->{
             if(!checked)return;
             for(int i=0;i<types.length;i++)if(themeIds[i]==id&&!prefs.theme().equals(types[i])){
-                prefs.theme(types[i]);
-                AppCompatDelegate.setDefaultNightMode(i==1
-                    ?AppCompatDelegate.MODE_NIGHT_NO:i==2
-                    ?AppCompatDelegate.MODE_NIGHT_YES:AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM);
+                final String newMode=types[i];
+                // Only one Activity recreation, with a coordinated outgoing
+                // theme veil and incoming fade-through. MainActivity applies
+                // AppCompat night mode BEFORE super.onCreate.
+                animateThemeChange(() -> {
+                    prefs.theme(newMode);
+                    activity.recreate();
+                });
                 return;
             }
         });
         MaterialSwitch dynamic=switchItem(group,"动态配色","Android 12+ 从壁纸提取 Material You 色彩",prefs.dynamicColor());
         dynamic.setOnCheckedChangeListener((button,checked)->{
-            if(prefs.dynamicColor()!=checked){prefs.dynamicColor(checked);activity.recreate();}
+            if (prefs.dynamicColor()!=checked) {
+                animateThemeChange(() -> {
+                    prefs.dynamicColor(checked);
+                    activity.recreate();
+                });
+            }
         });
         MaterialSwitch motion=switchItem(group,"精致动效","页面转场与内容进入动画",prefs.animations());
         motion.setOnCheckedChangeListener((button,checked)->prefs.animations(checked));
@@ -418,19 +483,54 @@ public final class MaterialShell {
 
         MaterialCardView advanced=card(page);
         LinearLayout body=cardContent(advanced);
-        label(body,"高级诊断","TCP、TLS、IP 连接测试，以及原始运行日志。");
-        TextView caution=text("默认隐藏。仅在排查网络和原生引擎问题时使用。",13,false);
+        label(body,"高级诊断","仅在排查连接、TLS 或原生引擎问题时展开。");
+        TextView caution=text("这些测试会绑定线路页选择的 Android 网络，不会自动切换到 VPN。",13,false);
         caution.setTextColor(onSurfaceVariant);
         body.addView(caution);
+        space(body,8);
         MaterialButton toggle=action("展开工程诊断");
+        toggle.setIconResource(R.drawable.ic_route);
         body.addView(toggle);
-        detach(slots.diagnostics);
-        slots.diagnostics.setVisibility(View.GONE);
-        body.addView(slots.diagnostics,new LinearLayout.LayoutParams(-1,dp(540)));
+
+        // Crucial fix: never embed the old full-height ScrollView inside the
+        // Settings ScrollView. Move ONLY the live diagnostic controls into
+        // the Settings page's ONE scrollable column. No fixed 540dp viewport,
+        // no nested touch interception, and no stale Milestone headings.
+        LinearLayout diagnosis=stack();
+        diagnosis.setVisibility(View.GONE);
+        body.addView(diagnosis, new LinearLayout.LayoutParams(-1,-2));
+        space(diagnosis,12);
+        label(diagnosis,"网络详情","查看接口、网络标识与系统 DNS");
+        move(diagnosis,slots.networkDetails);
+        label(diagnosis,"连接验证","从所选网络执行 TCP、TLS 和 HTTPS 验证");
+        move(diagnosis,slots.googleDns);
+        move(diagnosis,slots.googleTls);
+        label(diagnosis,"指定 IP","确认某个 Google 前端地址是否可达");
+        move(diagnosis,slots.manualIpInput);
+        move(diagnosis,slots.manualTcp);
+        move(diagnosis,slots.manualTls);
+        label(diagnosis,"公开测试","只测试公开 Google Drive API 文档");
+        move(diagnosis,slots.publicTransfer);
+        move(diagnosis,slots.publicSave);
+        label(diagnosis,"原生下载器","状态查看与紧急取消");
+        move(diagnosis,slots.downloadStatus);
+        move(diagnosis,slots.downloadCancel);
+        label(diagnosis,"运行结果","日志会在此处显示，可长按复制");
+        diagnosticsResult=text("点击上方某项测试查看结果。",13,false);
+        diagnosticsResult.setTextColor(onSurfaceVariant);
+        diagnosticsResult.setTextIsSelectable(true);
+        diagnosticsResult.setPadding(dp(8),dp(10),dp(8),dp(10));
+        diagnosis.addView(diagnosticsResult,new LinearLayout.LayoutParams(-1,-2));
         toggle.setOnClickListener(v->{
-            boolean visible=slots.diagnostics.getVisibility()==View.VISIBLE;
-            slots.diagnostics.setVisibility(visible?View.GONE:View.VISIBLE);
-            toggle.setText(visible?"展开工程诊断":"收起工程诊断");
+            boolean opening=diagnosis.getVisibility()!=View.VISIBLE;
+            if(motionEnabled()) {
+                MaterialFadeThrough transition = new MaterialFadeThrough();
+                transition.setDuration(250L);
+                TransitionManager.beginDelayedTransition(body,transition);
+            }
+            diagnosis.setVisibility(opening?View.VISIBLE:View.GONE);
+            toggle.setText(opening?"收起工程诊断":"展开工程诊断");
+            toggle.setIconResource(opening?R.drawable.ic_close:R.drawable.ic_route);
             haptic();
         });
 
@@ -488,30 +588,108 @@ public final class MaterialShell {
     private int destination(int index) {
         return index==1?TRANSFERS:index==2?ROUTES:index==3?SETTINGS:FILES;
     }
+    private String tabName(int index) {
+        return index==1?"transfers":index==2?"routes":index==3?"settings":"files";
+    }
+    private boolean motionEnabled() {
+        // Respect both the user's choice AND Android accessibility/animator
+        // scale 0. No unwanted motion when "Remove animations" is enabled.
+        return prefs.animations() && ValueAnimator.areAnimatorsEnabled();
+    }
+
+    public void saveUiState(Bundle state) {
+        if (state == null) return;
+        state.putString("ui.selected_tab", tabName(Math.max(0,currentPage)));
+        retainScroll();
+        for (int i=0;i<pages.length;i++) {
+            if(pages[i] instanceof ScrollView) {
+                state.putInt("ui.scroll_"+i,((ScrollView)pages[i]).getScrollY());
+            }
+        }
+    }
+
+    private void retainScroll() {
+        for(int i=0;i<pages.length;i++) {
+            if (pages[i] instanceof ScrollView) {
+                prefs.retainScroll(i,((ScrollView)pages[i]).getScrollY());
+            }
+        }
+    }
+
+    /**
+     * Two-part theme motion: the old surface fades to a Material tonal veil,
+     * then a new-configuration Activity fades/settles into place. It avoids
+     * storing screenshots of potentially sensitive Drive/OAuth content.
+     */
+    private void animateThemeChange(Runnable applyTheme) {
+        retainScroll();
+        prefs.currentTab(tabName(Math.max(0,currentPage)));
+        if (!motionEnabled()) {
+            prefs.themeMotionPending(false);
+            applyTheme.run();
+            return;
+        }
+        FrameLayout host = activity.findViewById(android.R.id.content);
+        if (host == null) { applyTheme.run(); return; }
+        View veil=new View(activity);
+        veil.setBackgroundColor(color(
+            com.google.android.material.R.attr.colorSurfaceContainerHigh,secondaryContainer));
+        veil.setAlpha(0f);
+        veil.setClickable(true);
+        host.addView(veil,new FrameLayout.LayoutParams(-1,-1));
+        veil.animate().alpha(1f).setDuration(180L)
+            .setInterpolator(new PathInterpolator(0.2f,0f,0f,1f))
+            .withEndAction(() -> {
+                prefs.themeMotionPending(true);
+                applyTheme.run();
+            }).start();
+    }
+
     private void showIndex(int next) {
-        if(next==currentPage)return;
-        final int previous=currentPage;
-        currentPage=next;
-        if(previous>=0) pages[previous].setVisibility(View.GONE);
-        View incoming=pages[next];
-        incoming.setVisibility(View.VISIBLE);
-        incoming.bringToFront();
-        if(prefs.animations()){
-            incoming.setAlpha(0f);
-            incoming.setTranslationY(dp(12));
-            incoming.animate().alpha(1f).translationY(0f).setDuration(240).start();
-        }else{
-            incoming.setAlpha(1f);
-            incoming.setTranslationY(0f);
+        if (next == currentPage) return;
+        int previous = currentPage;
+        currentPage = next;
+        prefs.currentTab(tabName(next));
+        toolbar.setSubtitle(next==0?"云端文件":next==1?"传输任务":
+            next==2?"智能线路":"个性化与高级选项");
+
+        // Material's Fade Through is intended for *peer* destinations in
+        // bottom navigation. Outgoing and incoming pages are animated in
+        // one transition, never as independent, overlapping Y slides.
+        TransitionManager.endTransitions(content);
+        if (previous < 0 || !motionEnabled()) {
+            for (int i=0;i<pages.length;i++) {
+                pages[i].setVisibility(i==next?View.VISIBLE:View.GONE);
+                pages[i].setAlpha(1f);
+                pages[i].setTranslationY(0f);
+            }
+        } else {
+            for(int i=0;i<pages.length;i++) {
+                if(i!=previous && i!=next)pages[i].setVisibility(View.GONE);
+            }
+            MaterialFadeThrough fade = new MaterialFadeThrough();
+            fade.setDuration(300L);
+            fade.setInterpolator(new PathInterpolator(0.2f,0f,0f,1f));
+            TransitionManager.beginDelayedTransition(content,fade);
+            pages[previous].setVisibility(View.GONE);
+            pages[next].setVisibility(View.VISIBLE);
         }
         if(next==1)refreshTransfers();
-        haptic();
+        if(previous>=0)haptic();
     }
+
     public void open(String target) {
         int id="transfers".equals(target)?TRANSFERS:"routes".equals(target)?ROUTES:
             "settings".equals(target)?SETTINGS:FILES;
         navigation.setSelectedItemId(id);
     }
+
+    public void showDiagnosticResult(String text) {
+        if (diagnosticsResult != null) {
+            diagnosticsResult.setText(text);
+        }
+    }
+
     /** Live scan progress, without requiring a debug diagnostics button. */
     public void refreshScan() {
         if (scanProgressBar == null || scanProgressLabel == null) return;

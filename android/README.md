@@ -35,5 +35,15 @@ Official CI builds are permanently signed using the original user-owned key.
 Never push signing keys. If Actions Secrets are unavailable, unsigned-for-
 distribution debug validation builds are not published as user updates.
 
-**Status: 1.0.0-rc1.** Download-task resilience, live device tests and
+**Status: 1.0.0-rc2.** Download-task resilience, live device tests and
 Workspace export need further validation before a final general release.
+
+## RC2 interaction refinements
+
+- A single Settings destination in the bottom navigation: removed redundant toolbar gear.
+- Material Fade Through replaces abrupt single-page Y-slide animation for tab switches.
+- Navigation pills now use the native Material 3 active indicator, subtle low-opacity ripple, and stateful icon/label colors.
+- Settings remains selected after light/dark or dynamic-color change, retaining scroll location.
+- Theme change uses an outgoing tonal veil and incoming content easing; no screenshots or credentials are cached for the effect.
+- Developer tools are reparented into an expandable section of the same Settings ScrollView, not a nested ScrollView with fixed height. Its results stay visible locally without jumping to Routes.
+- Android's animator-disabled accessibility setting overrides decorative motion.

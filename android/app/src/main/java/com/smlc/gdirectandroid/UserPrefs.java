@@ -13,6 +13,32 @@ public final class UserPrefs {
     private int range(String key, int fallback, int min, int max) {
         return Math.max(min, Math.min(max, prefs.getInt(key, fallback)));
     }
+    // Persist navigation across AppCompat day/night Activity recreation.
+    public String currentTab() { return prefs.getString("current_tab", "files"); }
+    public void currentTab(String tab) {
+        if (tab == null) return;
+        if (!tab.equals("files") && !tab.equals("transfers")
+            && !tab.equals("routes") && !tab.equals("settings")) return;
+        prefs.edit().putString("current_tab", tab).apply();
+    }
+    public void retainScroll(int index, int y) {
+        if (index >= 0 && index < 4) {
+            prefs.edit().putInt("scroll_" + index, Math.max(0, y)).apply();
+        }
+    }
+    public int scroll(int index) {
+        if (index < 0 || index >= 4) return 0;
+        return Math.max(0, prefs.getInt("scroll_" + index, 0));
+    }
+    public void themeMotionPending(boolean pending) {
+        prefs.edit().putBoolean("theme_motion_pending", pending).commit();
+    }
+    public boolean consumeThemeMotionPending() {
+        boolean pending = prefs.getBoolean("theme_motion_pending", false);
+        if (pending) prefs.edit().putBoolean("theme_motion_pending", false).apply();
+        return pending;
+    }
+
     public String theme() { return prefs.getString("theme", "system"); }
     public void theme(String mode) { prefs.edit().putString("theme", mode).apply(); }
     public boolean dynamicColor() { return prefs.getBoolean("dynamic_color", true); }

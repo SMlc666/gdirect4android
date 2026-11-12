@@ -71,7 +71,24 @@ fixed-signing keystore injected via GitHub Secrets. CI refuses to distribute
 an APK unless its SHA-256 signing certificate matches the pinned repository
 fingerprint. Never commit or share private signing keys.
 
-**Version status**: v1.0.0-rc1 is a testable release candidate, not yet a
+**Version status**: v1.0.0-rc2 is a testable release candidate, not yet a
 production-stability claim. Real-device validation of Material 3 theme, SAF,
 foreground service, background cancellation, route changes and OAuth remains
 required before a final 1.0 label.
+
+## RC2 motion, navigation and diagnostics
+
+Material 3 bottom navigation has **one** Settings entry. The top toolbar
+contains branding only. Switching peer destinations uses Material Fade Through
+rather than abruptly hiding the old view and sliding the new view up.
+
+The selected tab and the scroll positions are preserved across Activity
+recreation, including manual day/night and dynamic-color changes. With
+animations enabled, the old theme dissolves into a tonal surface veil and
+the new palette eases into place. When Android accessibility preferences
+turn off animator scale, the app switches instantly instead.
+
+Settings → Advanced Diagnostics expands *within the same scrollable page*.
+TCP/IP, DNS, TLS, public Google Drive tests and libaria2 status tools use
+ordinary Material cards and display results in that panel. There is no
+fixed-height nested scroll view that traps touch gestures.

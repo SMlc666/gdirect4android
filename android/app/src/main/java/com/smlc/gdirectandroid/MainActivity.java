@@ -245,10 +245,16 @@ public final class MainActivity extends AppCompatActivity {
         cancelDownloadButton.setOnClickListener(v -> {
             if (LOADED) nativeCancelDownload();
             result.setText("已向 libaria2 发出取消指令。");
+            if (shell != null) shell.showDiagnosticResult(
+                "已向原生下载器发出取消指令。");
         });
         downloadStatusButton = button(root, "查看 libaria2 实时进度");
         downloadStatusButton.setOnClickListener(v -> {
-            if (LOADED) result.setText(nativeDownloadProgress());
+            if (LOADED) {
+                String state = nativeDownloadProgress();
+                result.setText(state);
+                if (shell != null) shell.showDiagnosticResult(state);
+            }
         });
         drivePanel = new DrivePanel(this, () -> {
             Choice choice = selected();
@@ -346,7 +352,11 @@ public final class MainActivity extends AppCompatActivity {
             Choice choice = selected();
             String address = ipInput.getText().toString().trim();
             if (choice == null) return;
-            if (address.isEmpty()) { result.setText("请先输入 IP 地址。"); return; }
+            if (address.isEmpty()) {
+                result.setText("请先输入 IP 地址。");
+                if (shell != null) shell.showDiagnosticResult("请先输入 IP 地址。");
+                return;
+            }
             probe(() -> choice.title + "\n" + nativeVerifyGoogleIp(address, choice.handle));
         });
         googleButton.setOnClickListener(v -> {
@@ -359,13 +369,22 @@ public final class MainActivity extends AppCompatActivity {
             if (choice == null) return;
             if (address.isEmpty()) {
                 result.setText("请先输入 IP 地址。");
+                if (shell != null) shell.showDiagnosticResult("请先输入 IP 地址。");
                 return;
             }
             probe(() -> choice.title + "\n" + nativeProbeIp(address, choice.handle));
         });
         MaterialShell.Slots slots = new MaterialShell.Slots();
         slots.drive = drivePanel;
-        slots.diagnostics = scroll;
+        slots.googleDns = googleButton;
+        slots.googleTls = tlsButton;
+        slots.manualIpInput = ipInput;
+        slots.manualTcp = ipButton;
+        slots.manualTls = manualTlsButton;
+        slots.publicTransfer = transferButton;
+        slots.publicSave = saveButton;
+        slots.downloadStatus = downloadStatusButton;
+        slots.downloadCancel = cancelDownloadButton;
         slots.network = spinner;
         slots.scanPreset = scanLevel;
         slots.ranking = rankPreference;
@@ -377,7 +396,7 @@ public final class MainActivity extends AppCompatActivity {
         slots.networkDetails = details;
         slots.endpointSummary = endpointSummary;
         slots.scanResult = result;
-        shell = new MaterialShell(this, userPrefs, slots);
+        shell = new MaterialShell(this, userPrefs, slots, savedInstanceState);
         if (savedInstanceState != null) {
             pendingSaveNetwork = savedInstanceState.getLong("pendingSaveNetwork", -1L);
             pendingSaveNetworkLabel = savedInstanceState.getString("pendingSaveNetworkLabel", "");
@@ -558,6 +577,7 @@ public final class MainActivity extends AppCompatActivity {
     protected void onSaveInstanceState(Bundle state) {
         state.putLong("pendingSaveNetwork", pendingSaveNetwork);
         state.putString("pendingSaveNetworkLabel", pendingSaveNetworkLabel);
+        if (shell != null) shell.saveUiState(state);
         super.onSaveInstanceState(state);
     }
 
@@ -689,7 +709,7 @@ public final class MainActivity extends AppCompatActivity {
         manualTlsButton.setEnabled(false);
         refreshButton.setEnabled(false);
         result.setText("任务正在运行…");
-        if(shell != null) shell.open("routes");
+        if (shell != null) shell.showDiagnosticResult("正在执行测试…");
         worker.execute(() -> {
             String output;
             try { output = work.execute(); }
@@ -699,8 +719,12 @@ public final class MainActivity extends AppCompatActivity {
             runOnUiThread(() -> {
                 if (isDestroyed() || isFinishing()) return;
                 result.setText(report);
-                if(shell != null) shell.notice(
-                    report.length() > 70 ? "操作已完成，可在线路页面查看详情" : report);
+                if (shell != null) {
+                    shell.showDiagnosticResult(report);
+                    shell.notice(report.length() > 70
+                        ? "操作已完成，详情已显示在当前诊断区域"
+                        : report);
+                }
                 googleButton.setEnabled(LOADED);
                 ipButton.setEnabled(LOADED);
                 tlsButton.setEnabled(LOADED);

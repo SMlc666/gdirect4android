@@ -35,7 +35,7 @@ Official CI builds are permanently signed using the original user-owned key.
 Never push signing keys. If Actions Secrets are unavailable, unsigned-for-
 distribution debug validation builds are not published as user updates.
 
-**Status: 1.0.0-rc2.** Download-task resilience, live device tests and
+**Status: 1.0.0-rc3.** Download-task resilience, live device tests and
 Workspace export need further validation before a final general release.
 
 ## RC2 interaction refinements
@@ -47,3 +47,32 @@ Workspace export need further validation before a final general release.
 - Theme change uses an outgoing tonal veil and incoming content easing; no screenshots or credentials are cached for the effect.
 - Developer tools are reparented into an expandable section of the same Settings ScrollView, not a nested ScrollView with fixed height. Its results stay visible locally without jumping to Routes.
 - Android's animator-disabled accessibility setting overrides decorative motion.
+
+## RC3 — Durable transfer queue and portable user settings
+
+- Separate files are managed as durable SQLite tasks: queued, running, paused,
+  failed, cancelled or completed. Multiple pending jobs are processed FIFO.
+  A queued job can be moved to the front or paused; active jobs can be
+  paused/cancelled. One native aria2 **file** runs at a time; each file uses
+  1–16 concurrent HTTP connections, configurable in Settings.
+- Incomplete `id.bin` and `id.bin.aria2` pieces are stored in the
+  app's PRIVATE files directory, never in the disposable cache. aria2
+  resumes via saved bitfield/HTTP Range. Changing selected Google IP does not
+  destroy the local pieces. Completed/cancelled jobs release partial files;
+  pause/failure preserves them.
+- A process kill marks an interrupted job Paused the next time the app opens.
+  It is **not** automatically restarted at boot. Press Resume after selecting
+  an available network; freshly refreshed OAuth access tokens are obtained
+  using the existing Android Keystore-protected refresh credential. Access
+  tokens are NEVER written to the queue, Intent extras or transfer history.
+- ACTION_CREATE_DOCUMENT destinations request persistable SAF write access;
+  a provider that denies persistable grants may require selecting a new
+  output file after reboot. Failed copy may leave a partial target document.
+- Settings → Config portability uses Android SAF import/export and a
+  versioned, validated JSON whitelist of non-sensitive app preferences.
+  OAuth metadata/secrets, refresh tokens, signing keys, Drive account info,
+  task database, partial files and ephemeral Android Network handles are
+  intentionally **not included**. Import validates all fields first.
+- No guarantee of resume across a changed remote file or server rejecting
+  Range requests; integrity checks still validate Drive size and MD5 where
+  provided. Google Workspace file export remains future work.

@@ -130,9 +130,10 @@ public final class MainActivity extends AppCompatActivity {
     private Button saveButton;
     private static final int REQUEST_CREATE_FILE = 6086;
     private static final int REQUEST_DRIVE_DOWNLOAD = 6087;
+    static final int REQUEST_EXPORT_CONFIG=7602;
+    static final int REQUEST_IMPORT_CONFIG=7603;
     private DrivePanel drivePanel;
     private DrivePanel.DriveFile pendingDriveFile;
-    private String pendingDriveToken;
     private long pendingDriveNetwork = -1L;
     private String pendingDriveNetworkLabel = "";
     private String pendingDriveIps = "";
@@ -268,7 +269,6 @@ public final class MainActivity extends AppCompatActivity {
             Choice choice = selected();
             if (choice == null) return;
             pendingDriveFile = entry;
-            pendingDriveToken = token;
             pendingDriveNetwork = choice.handle;
             pendingDriveNetworkLabel = choice.title;
             // Snapshot the exact ranked pool on the UI thread, at selection time.
@@ -400,6 +400,21 @@ public final class MainActivity extends AppCompatActivity {
         if (savedInstanceState != null) {
             pendingSaveNetwork = savedInstanceState.getLong("pendingSaveNetwork", -1L);
             pendingSaveNetworkLabel = savedInstanceState.getString("pendingSaveNetworkLabel", "");
+            String pendingId=savedInstanceState.getString("pending.drive.id");
+            if(pendingId!=null){
+                try {
+                    JSONObject savedFile=new JSONObject()
+                        .put("id",pendingId)
+                        .put("name",savedInstanceState.getString("pending.drive.name",pendingId))
+                        .put("mimeType",savedInstanceState.getString("pending.drive.mime",""))
+                        .put("md5Checksum",savedInstanceState.getString("pending.drive.md5",""))
+                        .put("size",savedInstanceState.getLong("pending.drive.size",-1));
+                    pendingDriveFile=new DrivePanel.DriveFile(savedFile);
+                    pendingDriveNetwork=savedInstanceState.getLong("pending.drive.network",-1);
+                    pendingDriveNetworkLabel=savedInstanceState.getString("pending.drive.route","");
+                    pendingDriveIps=savedInstanceState.getString("pending.drive.ips","");
+                } catch(Exception ignored){clearPendingDrive();}
+            }
         }
         refresh();
     }
@@ -577,6 +592,16 @@ public final class MainActivity extends AppCompatActivity {
     protected void onSaveInstanceState(Bundle state) {
         state.putLong("pendingSaveNetwork", pendingSaveNetwork);
         state.putString("pendingSaveNetworkLabel", pendingSaveNetworkLabel);
+        if (pendingDriveFile != null) {
+            state.putString("pending.drive.id", pendingDriveFile.id);
+            state.putString("pending.drive.name", pendingDriveFile.name);
+            state.putString("pending.drive.mime", pendingDriveFile.mimeType);
+            state.putString("pending.drive.md5", pendingDriveFile.md5);
+            state.putLong("pending.drive.size", pendingDriveFile.size);
+            state.putLong("pending.drive.network", pendingDriveNetwork);
+            state.putString("pending.drive.route", pendingDriveNetworkLabel);
+            state.putString("pending.drive.ips", pendingDriveIps);
+        }
         if (shell != null) shell.saveUiState(state);
         super.onSaveInstanceState(state);
     }
@@ -585,21 +610,59 @@ public final class MainActivity extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (drivePanel != null && drivePanel.onActivityResult(requestCode, resultCode, data)) return;
+        if(requestCode==REQUEST_EXPORT_CONFIG||requestCode==REQUEST_IMPORT_CONFIG){
+            if(resultCode!=RESULT_OK||data==null||data.getData()==null)return;
+            try {
+                Uri picked=data.getData();
+                if(requestCode==REQUEST_EXPORT_CONFIG){
+                    byte[] bytes=SettingsPortability.exportToJson(this)
+                        .toString(2).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    try(java.io.OutputStream out=getContentResolver().openOutputStream(picked,"wt")){
+                        if(out==null)throw new java.io.IOException("文档提供程序不允许写入");
+                        out.write(bytes);out.flush();
+                    }
+                    if(shell!=null)shell.notice("已导出非敏感设置 JSON，不包含 OAuth 和签名密钥");
+                }else{
+                    java.io.ByteArrayOutputStream mem=new java.io.ByteArrayOutputStream();
+                    try(java.io.InputStream in=getContentResolver().openInputStream(picked)){
+                        if(in==null)throw new java.io.IOException("无法读取配置文件");
+                        byte[] buf=new byte[4096];int n;
+                        while((n=in.read(buf))!=-1){
+                            if(mem.size()+n>65536)throw new java.io.IOException("配置超过 64 KiB");
+                            mem.write(buf,0,n);
+                        }
+                    }
+                    SettingsPortability.importFromJson(this,mem.toString("UTF-8"));
+                    if(shell!=null)shell.notice("设置已导入，正在应用新外观");
+                    recreate();
+                }
+            }catch(Exception error){
+                if(shell!=null)shell.notice("配置处理失败："+error.getMessage());
+            }
+            return;
+        }
         if (requestCode == REQUEST_DRIVE_DOWNLOAD) {
             if (resultCode != RESULT_OK || data == null || data.getData() == null) {
                 result.setText("已取消 Drive 文件保存。");
                 clearPendingDrive();
                 return;
             }
-            if (pendingDriveFile == null || pendingDriveToken == null ||
-                    pendingDriveNetwork < 0) {
+            if (pendingDriveFile == null || pendingDriveNetwork < 0) {
                 result.setText("下载授权或网络选择状态失效；请重新选择文件。");
                 clearPendingDrive();
                 return;
             }
             Uri destination = data.getData();
+            // Persist SAF write grant if the document provider supports it;
+            // queue completion may be hours later or after process restart.
+            try {
+                getContentResolver().takePersistableUriPermission(
+                    destination, Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            } catch (SecurityException | IllegalArgumentException ignored) {
+                // Some ACTION_CREATE_DOCUMENT providers do not offer a
+                // persistable grant. Queue/SAF errors remain visible on retry.
+            }
             DrivePanel.DriveFile entry = pendingDriveFile;
-            String token = pendingDriveToken;
             long network = pendingDriveNetwork;
             String networkLabel = pendingDriveNetworkLabel;
             String ips = pendingDriveIps;
@@ -612,7 +675,7 @@ public final class MainActivity extends AppCompatActivity {
                 // Download service is user-initiated by SAF file selection.
                 // It is no longer tied to the Activity's lifecycle.
                 Intent request = TransferService.create(
-                    this, destination, entry, token, network,
+                    this, destination, entry, network,
                     networkLabel, ips, userPrefs.connections());
                 startForegroundService(request);
                 if (shell != null) shell.open(
@@ -647,7 +710,6 @@ public final class MainActivity extends AppCompatActivity {
 
     private void clearPendingDrive() {
         pendingDriveFile = null;
-        pendingDriveToken = null;
         pendingDriveNetwork = -1L;
         pendingDriveNetworkLabel = "";
         pendingDriveIps = "";
@@ -735,6 +797,45 @@ public final class MainActivity extends AppCompatActivity {
                 refreshButton.setEnabled(true);
             });
         });
+    }
+
+
+    /** Called only by explicit download-card actions. Never silently switch
+     * to a default VPN after an old physical Network handle disappeared. */
+    public void queueCommand(String action,String id) {
+        Choice c=selected();
+        boolean resume=TransferService.COMMAND_RESUME.equals(action)||
+            TransferService.COMMAND_RESUME_ALL.equals(action);
+        if(resume&&c==null){
+            if(shell!=null)shell.notice("请在线路页面先选择有效网络，再恢复下载");
+            return;
+        }
+        long handle=c==null?-1:c.handle;
+        String ips=resume?String.join(",",endpointPool.addresses(handle,speedPreferred())):"";
+        Intent request=TransferService.control(this,action,id,
+            handle,c==null?"":c.title,ips);
+        try {
+            if(resume)startForegroundService(request);
+            else startService(request);
+            if(shell!=null)shell.refreshTransfers();
+        }catch(Exception error){
+            if(shell!=null)shell.notice("任务操作失败："+error.getMessage());
+        }
+    }
+    public void exportConfiguration(){
+        Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_TITLE,"gdirect-settings.json");
+        try{startActivityForResult(intent,REQUEST_EXPORT_CONFIG);}
+        catch(Exception e){if(shell!=null)shell.notice("无法打开文件选择器："+e.getMessage());}
+    }
+    public void importConfiguration(){
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        try{startActivityForResult(intent,REQUEST_IMPORT_CONFIG);}
+        catch(Exception e){if(shell!=null)shell.notice("无法打开文件选择器："+e.getMessage());}
     }
 
     private TextView text(LinearLayout root, String value, int sp, int color) {

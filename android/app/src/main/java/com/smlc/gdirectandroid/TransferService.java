@@ -8,17 +8,18 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.SystemClock;
+import android.provider.DocumentsContract;
 
 import androidx.core.app.NotificationCompat;
 
 import org.json.JSONArray;
-import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -34,365 +35,454 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * User-initiated foreground transfer, independent of an Activity lifecycle.
+ * Durable user-managed FIFO queue over the original single-session aria2 JNI.
  *
- * No OAuth refresh token is accepted here, and the temporary access token
- * is used only inside the current process, never persisted to disk or logs.
- * No automatic retry across process death; interrupted work is reported.
+ * Multiple separate files can wait and be paused/resumed across restarts;
+ * ONE aria2 file is active at a time, with up to 16 internal connections.
+ * State and progress survive process death in SQLite; .aria2 bitfields and
+ * partial payloads live in app-private filesDir, never disposable cacheDir.
+ * Access tokens are refreshed in RAM per job and never persisted to SQLite,
+ * Intent extras, files, notifications or history.
  */
 public final class TransferService extends Service {
-    public static final String ACTION_START = "com.smlc.gdirectandroid.DOWNLOAD";
-    public static final String ACTION_CANCEL = "com.smlc.gdirectandroid.CANCEL";
-    private static final String CHANNEL = "gdirect_transfers";
-    private static final int NOTIFY_ID = 9041;
-    private static final Pattern COUNTS = Pattern.compile("(\\d+)/(\\d+)");
-    private static final String HISTORY_KEY = "items";
-    private static final Object MONITOR = new Object();
-    private static volatile Snapshot current =
-        new Snapshot("idle", "", "还没有下载任务", 0L, -1L, "", 0L);
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
-    private final Handler main = new Handler(Looper.getMainLooper());
-    private volatile boolean active;
-    private volatile boolean cancelled;
+    public static final String ACTION_START="com.smlc.gdirectandroid.QUEUE";
+    public static final String ACTION_CONTROL="com.smlc.gdirectandroid.CONTROL";
+    public static final String COMMAND_PAUSE="pause", COMMAND_CANCEL="cancel",
+        COMMAND_RESUME="resume", COMMAND_REMOVE="remove";
+    public static final String COMMAND_RESUME_ALL="resume_all";
+    public static final String COMMAND_PRIORITY="priority";
+    private static final String CHANNEL="gdirect_transfers";
+    private static final int NOTIFY_ID=9041;
+    private static final Pattern COUNTS=Pattern.compile("(\\d+)/(\\d+)");
+    private final ExecutorService worker=Executors.newSingleThreadExecutor();
+    private final Handler ui=new Handler(Looper.getMainLooper());
+    private TransferQueue jobs;
+    private DesktopOAuth credentials;
+    private boolean working;
+    private volatile String activeId;
+    private volatile String requestedStop; // pause / cancel, no auth data
     private volatile boolean timedOut;
     private Runnable progressTick;
+    private static volatile Snapshot current =
+        new Snapshot("idle","","任务列表已就绪",0L,-1L,"",0L);
 
     public static final class Snapshot {
-        public final String status, name, detail, id;
-        public final long done, total, changedAt;
-        Snapshot(String status, String name, String detail, long done, long total, String id, long time) {
-            this.status = status; this.name = name; this.detail = detail;
-            this.done = done; this.total = total; this.id = id; changedAt = time;
+        public final String status,name,detail,id;
+        public final long done,total,changedAt;
+        Snapshot(String status,String name,String detail,long done,long total,
+                 String id,long changedAt) {
+            this.status=status;this.name=name;this.detail=detail;
+            this.done=done;this.total=total;this.id=id;this.changedAt=changedAt;
         }
         public int percent() {
-            if (total <= 0) return -1;
-            return (int) Math.max(0, Math.min(100, done * 100.0 / total));
+            if(total<=0)return -1;
+            return (int)Math.max(0,Math.min(100,done*100.0/total));
         }
     }
-
-    public static Snapshot snapshot() { return current; }
-
-    public static JSONArray history(Context context) {
-        try {
-            String raw = context.getSharedPreferences("gdirect_transfer_history_v1", MODE_PRIVATE)
-                .getString(HISTORY_KEY, "[]");
-            return new JSONArray(raw);
-        } catch (Exception ignored) { return new JSONArray(); }
+    public static Snapshot snapshot(){return current;}
+    public static JSONArray tasks(Context ctx) {
+        try(TransferQueue store=new TransferQueue(ctx.getApplicationContext())) {
+            return store.list();
+        }catch(Exception e){return new JSONArray();}
+    }
+    // Backwards-compatible history API used by the initial RC UI.
+    public static JSONArray history(Context ctx){return tasks(ctx);}
+    public static void clearHistory(Context ctx) {
+        try(TransferQueue store=new TransferQueue(ctx.getApplicationContext())){
+            store.clearFinished();
+        }
+    }
+    public static Intent create(Context context,Uri destination,DrivePanel.DriveFile file,
+                                long handle,String route,String ips,int connections) {
+        Intent i=new Intent(context,TransferService.class).setAction(ACTION_START);
+        i.putExtra("destination",destination.toString());
+        i.putExtra("file_id",file.id);
+        i.putExtra("name",file.name);
+        i.putExtra("md5",file.md5);
+        i.putExtra("size",file.size);
+        i.putExtra("handle",handle);
+        i.putExtra("route",route);
+        i.putExtra("ips",ips);
+        i.putExtra("connections",connections);
+        // The task ID is generated and committed inside TransferQueue.add.
+        // Crucially: no OAuth token is ever carried in a replayable Intent.
+        return i;
+    }
+    public static Intent control(Context context,String command,String id,
+                                 long handle,String route,String ips) {
+        Intent i=new Intent(context,TransferService.class).setAction(ACTION_CONTROL);
+        i.putExtra("command",command);
+        i.putExtra("job",id);
+        i.putExtra("handle",handle);
+        i.putExtra("route",route);
+        i.putExtra("ips",ips);
+        return i;
     }
 
-    public static void clearHistory(Context context) {
-        context.getSharedPreferences("gdirect_transfer_history_v1", MODE_PRIVATE)
-            .edit().putString(HISTORY_KEY, "[]").apply();
-    }
-
-    private void update(String status, String name, String detail, long done, long total, String id) {
-        current = new Snapshot(status, name, detail, done, total, id, System.currentTimeMillis());
-    }
-
-    private void record(String status, String name, String message, long size) {
-        try {
-            JSONArray old = history(this);
-            JSONArray updated = new JSONArray();
-            updated.put(new JSONObject().put("status", status).put("name", name)
-                .put("detail", message).put("bytes", size)
-                .put("timestamp", System.currentTimeMillis()));
-            for (int i = 0; i < old.length() && i < 29; i++) updated.put(old.get(i));
-            getSharedPreferences("gdirect_transfer_history_v1", MODE_PRIVATE)
-                .edit().putString(HISTORY_KEY, updated.toString()).apply();
-        } catch (Exception ignored) { /* No private tokens or exception dumps. */ }
-    }
-
-    public static Intent create(
-        Context context, Uri target, DrivePanel.DriveFile file, String token,
-        long handle, String route, String ips, int connections
-    ) {
-        Intent request = new Intent(context, TransferService.class).setAction(ACTION_START);
-        request.putExtra("uri", target.toString());
-        request.putExtra("file_id", file.id);
-        request.putExtra("file_name", file.name);
-        request.putExtra("size", file.size);
-        request.putExtra("md5", file.md5);
-        request.putExtra("token", token);
-        request.putExtra("handle", handle);
-        request.putExtra("route", route);
-        request.putExtra("ips", ips);
-        request.putExtra("connections", connections);
-        request.putExtra("task", UUID.randomUUID().toString());
-        return request;
-    }
-
-    @Override public void onCreate() {
+    @Override public void onCreate(){
         super.onCreate();
-        NotificationChannel channel = new NotificationChannel(
-            CHANNEL, "gdirect 下载任务", NotificationManager.IMPORTANCE_LOW);
-        channel.setDescription("文件传输进度与取消操作");
-        getSystemService(NotificationManager.class).createNotificationChannel(channel);
+        jobs=new TransferQueue(this);
+        // Recover tasks interrupted by process death once before any new
+        // session starts. Never automatically start a background FGS on boot.
+        jobs.getWritableDatabase();
+        credentials=new DesktopOAuth(getApplicationContext());
+        NotificationChannel c=new NotificationChannel(CHANNEL,
+            "gdirect 下载任务",NotificationManager.IMPORTANCE_LOW);
+        c.setDescription("正在进行的下载、暂停与任务队列");
+        getSystemService(NotificationManager.class).createNotificationChannel(c);
     }
 
-    @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) { stopSelfResult(startId); return START_NOT_STICKY; }
-        if (ACTION_CANCEL.equals(intent.getAction())) {
-            if (!active) { stopSelfResult(startId); return START_NOT_STICKY; }
-            cancelled = true;
-            MainActivity.nativeCancelDownload();
-            Snapshot s = current;
-            update("cancelling", s.name, "正在安全停止下载…", s.done, s.total, s.id);
-            notifyProgress(false);
-            return START_NOT_STICKY;
-        }
-        if (!ACTION_START.equals(intent.getAction())) return START_NOT_STICKY;
-
-        synchronized (MONITOR) {
-            if (active) {
-                // A service already owns original libaria2's global session.
-                // Never let concurrent downloads overwrite the temp destination.
-                record("rejected", intent.getStringExtra("file_name"),
-                    "当前已有任务，请等待完成或取消", 0);
+    @Override public int onStartCommand(Intent intent,int flags,int startId){
+        if(intent==null){stopSelf();return START_NOT_STICKY;}
+        boolean shouldRun=false;
+        try {
+            if(ACTION_START.equals(intent.getAction())){
+                String id=intent.getStringExtra("file_id");
+                String name=intent.getStringExtra("name");
+                String destination=intent.getStringExtra("destination");
+                String ips=intent.getStringExtra("ips");
+                long handle=intent.getLongExtra("handle",-1);
+                if(handle<0)throw new IllegalArgumentException("网络句柄不可用");
+                Uri uri=Uri.parse(destination);
+                if(!"content".equals(uri.getScheme()))
+                    throw new IllegalArgumentException("仅支持 Android SAF 保存位置");
+                TransferQueue.Job queued=jobs.add(id,name,intent.getStringExtra("md5"),
+                    uri.toString(),intent.getStringExtra("route"),ips,handle,
+                    intent.getLongExtra("size",-1),intent.getIntExtra("connections",8));
+                current=new Snapshot("queued",queued.name,"已加入下载队列",
+                    0,queued.size,queued.id,System.currentTimeMillis());
+                shouldRun=true;
+            }else if(ACTION_CONTROL.equals(intent.getAction())){
+                String command=intent.getStringExtra("command");
+                String id=intent.getStringExtra("job");
+                if(COMMAND_PAUSE.equals(command)||COMMAND_CANCEL.equals(command)){
+                    if(id!=null&&id.equals(activeId)) {
+                        requestedStop=command;
+                        MainActivity.nativeCancelDownload();
+                    }else if(COMMAND_PAUSE.equals(command)){
+                        jobs.move(id,TransferQueue.QUEUED,TransferQueue.PAUSED);
+                    }else{
+                        if(jobs.move(id,TransferQueue.QUEUED,TransferQueue.CANCELLED)
+                          || jobs.move(id,TransferQueue.PAUSED,TransferQueue.CANCELLED)
+                          || jobs.move(id,TransferQueue.FAILED,TransferQueue.CANCELLED))
+                            discard(id);
+                    }
+                }else if(COMMAND_RESUME.equals(command)||
+                          COMMAND_RESUME_ALL.equals(command)){
+                    long handle=intent.getLongExtra("handle",-1);
+                    String route=intent.getStringExtra("route");
+                    String ips=intent.getStringExtra("ips");
+                    if(handle<0||ips==null||ips.isEmpty()){
+                        throw new IllegalArgumentException("请选择有效网络及 Google 优选 IP");
+                    }
+                    if(COMMAND_RESUME.equals(command)){
+                        shouldRun=jobs.resume(id,handle,route,ips);
+                    }else{
+                        JSONArray entries=jobs.list();
+                        for(int i=0;i<entries.length();i++){
+                            org.json.JSONObject item=entries.optJSONObject(i);
+                            if(item==null)continue;
+                            String state=item.optString("state");
+                            if(TransferQueue.PAUSED.equals(state) ||
+                               TransferQueue.FAILED.equals(state)){
+                                shouldRun|=jobs.resume(item.optString("id"),handle,route,ips);
+                            }
+                        }
+                    }
+                }else if(COMMAND_PRIORITY.equals(command)){
+                    jobs.prioritize(id);
+                }else if(COMMAND_REMOVE.equals(command)){
+                    if(id!=null&&id.equals(activeId)){
+                        // Do not unlink a partial while libaria2 still owns it.
+                        requestedStop=COMMAND_CANCEL;
+                        MainActivity.nativeCancelDownload();
+                    }else if(jobs.remove(id)){
+                        discard(id);
+                    }
+                }
+            }else{
+                stopSelfResult(startId);
                 return START_NOT_STICKY;
             }
-            active = true;
+            if(shouldRun&&!working)startQueue();
+            else if(!working)stopSelfResult(startId);
+        }catch(Exception|LinkageError error){
+            current=new Snapshot("failed","","无法加入队列："+safe(error.getMessage()),
+                0,-1,"",System.currentTimeMillis());
+            if(!working)stopSelfResult(startId);
         }
-        cancelled = false;
-        timedOut = false;
-        final String name = intent.getStringExtra("file_name") == null
-            ? "Google Drive 文件" : intent.getStringExtra("file_name");
-        final String id = intent.getStringExtra("task") == null
-            ? UUID.randomUUID().toString() : intent.getStringExtra("task");
-        update("running", name, "准备原版 libaria2 下载引擎…", 0, -1, id);
-        try {
-            if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(NOTIFY_ID, notification(false),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
-            } else {
-                startForeground(NOTIFY_ID, notification(false));
-            }
-        } catch (RuntimeException e) {
-            active = false;
-            record("failed", name, "无法启动前台下载服务（请检查系统权限）", 0);
-            stopSelfResult(startId);
-            return START_NOT_STICKY;
-        }
-        scheduleProgress();
-        final Uri destination;
-        try {
-            destination = Uri.parse(intent.getStringExtra("uri"));
-            if (!"content".equals(destination.getScheme())) {
-                throw new IllegalArgumentException("只支持 Android SAF content URI");
-            }
-        } catch (Exception e) {
-            finish("failed", name, "无效的保存位置", 0, id, startId);
-            return START_NOT_STICKY;
-        }
-        final String fileId = intent.getStringExtra("file_id");
-        final String token = intent.getStringExtra("token");
-        final String expectedMd5 = intent.getStringExtra("md5");
-        final long size = intent.getLongExtra("size", -1);
-        final long handle = intent.getLongExtra("handle", -1);
-        final String route = intent.getStringExtra("route");
-        final String ips = intent.getStringExtra("ips");
-        final int connections = Math.max(1, Math.min(16, intent.getIntExtra("connections", 8)));
-        if (fileId == null || token == null || ips == null || handle < 0) {
-            finish("failed", name, "授权或所选网络参数不完整", 0, id, startId);
-            return START_NOT_STICKY;
-        }
-        // Worker receives values, not the Intent itself, to avoid retaining
-        // an unnecessary object containing the bearer token.
-        worker.execute(() -> {
-            try {
-                long saved = transfer(destination, fileId, token, size, expectedMd5,
-                    handle, ips, connections, id, name);
-                if (cancelled || timedOut) {
-                    finish("cancelled", name, "下载已取消，未提交不完整文件", 0, id, startId);
-                } else {
-                    finish("completed", name, "下载完成 · " + displaySize(saved)
-                        + " · " + (route == null ? "已选网络" : route), saved, id, startId);
-                }
-            } catch (Exception e) {
-                finish(cancelled ? "cancelled" : "failed", name,
-                    cancelled ? "下载已取消" : shorten(e.getMessage()), 0, id, startId);
-            } catch (LinkageError e) {
-                finish("failed", name, "原生下载引擎加载失败", 0, id, startId);
-            }
-        });
         return START_NOT_STICKY;
     }
 
-    private long transfer(Uri destination, String fileId, String token, long expectedSize,
-                          String expectedMd5, long handle, String ips, int connections,
-                          String taskId, String displayName) throws Exception {
-        File folder = new File(getCacheDir(), "transfers");
-        if (!folder.exists() && !folder.mkdirs()) throw new Exception("无法创建下载缓存目录");
-        String stem = taskId.replaceAll("[^a-zA-Z0-9_-]", "");
-        File result = new File(folder, stem + ".bin");
-        File checkpoint = new File(folder, stem + ".bin.aria2");
-        File ca = new File(getNoBackupFilesDir(), "gts-roots.pem");
-        if (!ca.isFile() || ca.length() < 1000) {
-            try (InputStream in = getAssets().open("gts-roots.pem");
-                 OutputStream out = new FileOutputStream(ca)) {
-                byte[] buffer = new byte[8192];
-                int n;
-                while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
-            }
-        }
+    private void startQueue(){
+        if(working)return;
+        working=true;
+        timedOut=false;
         try {
-            if (cancelled) throw new Exception("取消下载");
-            String report = MainActivity.nativeDownloadDrive(
-                fileId, token, ca.getAbsolutePath(), folder.getAbsolutePath(),
-                result.getName(), handle, ips, connections);
-            if (!report.startsWith("OK\n") || cancelled || timedOut) {
-                throw new Exception(cancelled ? "取消下载" : shorten(report));
-            }
-            long actual = result.length();
-            if (actual == 0) throw new Exception("下载结果为空");
-            if (expectedSize >= 0 && expectedSize != actual) {
-                throw new Exception("Drive 文件大小校验失败");
-            }
-            if (expectedMd5 != null && !expectedMd5.isEmpty()) {
-                MessageDigest digest = MessageDigest.getInstance("MD5");
-                try (InputStream in = new FileInputStream(result)) {
-                    byte[] buf = new byte[65536];
-                    int n;
-                    while ((n = in.read(buf)) != -1) digest.update(buf, 0, n);
-                }
-                StringBuilder hex = new StringBuilder();
-                for (byte b : digest.digest()) hex.append(String.format(Locale.ROOT, "%02x", b & 0xff));
-                if (!hex.toString().equalsIgnoreCase(expectedMd5)) {
-                    throw new Exception("Drive MD5 校验失败，已拒绝写入目标文件");
-                }
-            }
-            if (cancelled) throw new Exception("取消下载");
-            update("saving", displayName, "已验证文件完整性，保存到所选位置…",
-                actual, actual, taskId);
-            notifyProgress(false);
-            long copied = 0;
-            // SAF documents can be created before the download starts; we
-            // never write incomplete network payloads into that destination.
-            try (InputStream source = new FileInputStream(result);
-                 OutputStream sink = getContentResolver().openOutputStream(destination, "wt")) {
-                if (sink == null) throw new Exception("Android 文档提供程序拒绝写入");
-                byte[] buf = new byte[65536];
-                int n;
-                while ((n = source.read(buf)) != -1) {
-                    if (cancelled) throw new Exception("用户取消写入");
-                    sink.write(buf, 0, n);
-                    copied += n;
-                }
-                sink.flush();
-            } catch (Exception e) {
-                throw new Exception("保存到文档失败，目标文档可能不完整：" + shorten(e.getMessage()));
-            }
-            if (copied != actual) throw new Exception("保存字节数与下载文件不一致");
-            return actual;
-        } finally {
-            if (!result.delete()) result.deleteOnExit();
-            if (!checkpoint.delete()) checkpoint.deleteOnExit();
+            if(Build.VERSION.SDK_INT>=29)
+                startForeground(NOTIFY_ID,notification(false),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            else startForeground(NOTIFY_ID,notification(false));
+        }catch(RuntimeException error){
+            working=false;
+            TransferQueue.Job first=jobs.next();
+            if(first!=null)jobs.change(first.id,TransferQueue.QUEUED,
+                TransferQueue.PAUSED,"系统不允许启动前台下载服务；请在前台手动恢复");
+            stopSelf();
+            return;
         }
-    }
-
-    private void scheduleProgress() {
-        progressTick = new Runnable() {
-            @Override public void run() {
-                if (!active) return;
-                // Native aria2 initializes cancellation at session start.
-                // Reassert user cancellation until that JNI call terminates,
-                // closing the race where a tap precedes its initialization.
-                if (cancelled) MainActivity.nativeCancelDownload();
-                Snapshot s = current;
-                if ("running".equals(s.status)) {
-                    try {
-                        String raw = MainActivity.nativeDownloadProgress();
-                        Matcher m = COUNTS.matcher(raw);
-                        long done = 0, total = -1;
-                        if (m.find()) {
-                            done = Long.parseLong(m.group(1));
-                            total = Long.parseLong(m.group(2));
-                        }
-                        update("running", s.name, raw, done, total, s.id);
-                    } catch (Exception | LinkageError ignored) {
-                        // Do not leak a private URL/token through notifications.
+        progressTick=new Runnable(){
+            @Override public void run(){
+                if(!working)return;
+                String id=activeId;
+                if(id!=null){
+                    if(requestedStop!=null)MainActivity.nativeCancelDownload();
+                    TransferQueue.Job job=jobs.get(id);
+                    if(job!=null&&TransferQueue.RUNNING.equals(job.state)){
+                        try {
+                            String raw=MainActivity.nativeDownloadProgress();
+                            Matcher match=COUNTS.matcher(raw);
+                            if(match.find()){
+                                long done=Long.parseLong(match.group(1));
+                                long total=Long.parseLong(match.group(2));
+                                jobs.progress(id,done,total,raw);
+                                current=new Snapshot("running",job.name,raw,done,total,id,
+                                    System.currentTimeMillis());
+                            }
+                        }catch(Exception|LinkageError ignored){}
                     }
                 }
                 notifyProgress(false);
-                main.postDelayed(this, 1100);
+                ui.postDelayed(this,1500L);
             }
         };
-        main.post(progressTick);
+        ui.post(progressTick);
+        worker.execute(this::drainQueue);
     }
 
-    private Notification notification(boolean finished) {
-        Snapshot s = current;
-        Intent open = new Intent(this, MainActivity.class)
-            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            .putExtra("open_tab", "transfers");
-        PendingIntent openPending = PendingIntent.getActivity(
-            this, 9021, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle(finished ? "gdirect · 任务结束" : s.name)
-            .setContentText(s.detail)
-            .setContentIntent(openPending)
-            .setOnlyAlertOnce(true)
-            .setOngoing(!finished)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE);
-        if (!finished) {
-            if (s.percent() >= 0) builder.setProgress(100, s.percent(), false);
-            else builder.setProgress(100, 0, true);
-            Intent cancel = new Intent(this, TransferService.class).setAction(ACTION_CANCEL);
-            PendingIntent cancelPending = PendingIntent.getService(
-                this, 9022, cancel, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-            builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPending);
-        } else builder.setAutoCancel(true).setProgress(0, 0, false);
-        return builder.build();
-    }
-
-    private void notifyProgress(boolean finished) {
-        getSystemService(NotificationManager.class).notify(NOTIFY_ID, notification(finished));
-    }
-
-    private void finish(String state, String name, String message,
-                        long bytes, String id, int startId) {
-        // End on main thread so service and foreground notifications are
-        // updated atomically with UI-visible final state.
-        main.post(() -> {
-            Snapshot before = current;
-            update(state, name, message, bytes, bytes > 0 ? bytes : before.total, id);
-            record(state, name, message, bytes);
-            if (progressTick != null) main.removeCallbacks(progressTick);
-            active = false;
-            notifyProgress(true);
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            // Post a normal, dismissible completion/failure notification.
-            notifyProgress(true);
-            stopSelf();
+    private void drainQueue(){
+        while(!timedOut){
+            TransferQueue.Job job=jobs.next();
+            if(job==null)break;
+            if(!jobs.change(job.id,TransferQueue.QUEUED,
+                TransferQueue.RUNNING,"正在准备 Google Drive 下载"))continue;
+            activeId=job.id;
+            requestedStop=null;
+            current=new Snapshot("running",job.name,"正在准备文件…",job.done,
+                job.size,job.id,System.currentTimeMillis());
+            try {
+                // No OAuth token survives in the task database. Each file gets
+                // a fresh valid access token from Keystore-encrypted refresh.
+                ensureNetwork(job.network);
+                String token=credentials.getTokenBlocking();
+                long bytes=transfer(job,token);
+                String stop=requestedStop;
+                if(COMMAND_PAUSE.equals(stop) || timedOut) {
+                    jobs.change(job.id,TransferQueue.RUNNING,
+                        TransferQueue.PAUSED,"下载已暂停，断点保留");
+                    current=new Snapshot("paused",job.name,"已保留本地断点",
+                        job.done,job.size,job.id,System.currentTimeMillis());
+                }else if(COMMAND_CANCEL.equals(stop)){
+                    jobs.change(job.id,TransferQueue.RUNNING,
+                        TransferQueue.CANCELLED,"已取消下载");
+                    discard(job.id);
+                    current=new Snapshot("cancelled",job.name,"任务已取消",
+                        0,job.size,job.id,System.currentTimeMillis());
+                }else{
+                    jobs.change(job.id,TransferQueue.RUNNING,
+                        TransferQueue.COMPLETED,"下载完成 · "+displaySize(bytes));
+                    current=new Snapshot("completed",job.name,
+                        "已完整保存 · "+displaySize(bytes),bytes,bytes,job.id,
+                        System.currentTimeMillis());
+                    discard(job.id);
+                }
+            }catch(Exception|LinkageError error){
+                String stop=requestedStop;
+                String state=timedOut||COMMAND_PAUSE.equals(stop)?
+                    TransferQueue.PAUSED:COMMAND_CANCEL.equals(stop)?
+                    TransferQueue.CANCELLED:TransferQueue.FAILED;
+                String reason=TransferQueue.PAUSED.equals(state)?
+                    "已暂停；可重新选择网络继续":
+                    TransferQueue.CANCELLED.equals(state)?"用户取消":
+                    safe(error.getMessage());
+                jobs.change(job.id,TransferQueue.RUNNING,state,reason);
+                if(TransferQueue.CANCELLED.equals(state))discard(job.id);
+                current=new Snapshot(state,job.name,reason,
+                    job.done,job.size,job.id,System.currentTimeMillis());
+            }finally{
+                activeId=null;
+                requestedStop=null;
+                notifyProgress(false);
+            }
+        }
+        ui.post(()->{
+            // Protect against a last enqueue being delivered while the
+            // worker is winding down. It will see the next explicit command.
+            working=false;
+            if(progressTick!=null)ui.removeCallbacks(progressTick);
+            // A new user-enqueued job can arrive in the small gap after
+            // the previous loop saw an empty queue. Never strand it.
+            if(!timedOut && jobs.next()!=null){
+                startQueue();
+            }else{
+                stopForeground(STOP_FOREGROUND_REMOVE);
+                notifyProgress(true);
+                stopSelf();
+            }
         });
     }
 
-    private static String shorten(String text) {
-        if (text == null || text.trim().isEmpty()) return "未知错误";
-        return text.length() > 320 ? text.substring(0, 320) : text;
-    }
-    private static String displaySize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1048576) return String.format(Locale.ROOT, "%.1f KiB", bytes / 1024.0);
-        return String.format(Locale.ROOT, "%.1f MiB", bytes / 1048576.0);
+    private void ensureNetwork(long handle)throws Exception {
+        if(handle==0)return; // user expressly selected system default
+        ConnectivityManager cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);
+        for(Network network:cm.getAllNetworks()){
+            if(network.getNetworkHandle()==handle)return;
+        }
+        throw new Exception("原选择的网络已断开，请在线路页面重新选择并恢复");
     }
 
-    @Override public void onTimeout(int startId, int fgsType) {
-        timedOut = true;
-        cancelled = true;
+    private long transfer(TransferQueue.Job job,String token)throws Exception {
+        File folder=folder();
+        File result=payload(job.id);
+        File checkpoint=controlFile(job.id);
+        File ca=new File(getNoBackupFilesDir(),"gts-roots.pem");
+        if(!ca.isFile()||ca.length()<1000){
+            try(InputStream in=getAssets().open("gts-roots.pem");
+                OutputStream out=new FileOutputStream(ca)){
+                byte[] buf=new byte[8192];int n;
+                while((n=in.read(buf))!=-1)out.write(buf,0,n);
+            }
+        }
+        if(requestedStop!=null)throw new Exception("用户暂停或取消");
+        boolean completeLocally=result.isFile() && !checkpoint.isFile()
+            && job.size>0 && result.length()==job.size && !job.md5.isEmpty()
+            && validMd5(result,job.md5);
+        if(!completeLocally){
+            String report=MainActivity.nativeDownloadDrive(job.fileId,token,
+                ca.getAbsolutePath(),folder.getAbsolutePath(),result.getName(),
+                job.network,job.ips,job.connections);
+            if(!report.startsWith("OK\n"))
+                throw new Exception("aria2 下载未完成：" + safe(report));
+        }
+        if(requestedStop!=null)throw new Exception("用户暂停或取消");
+        long size=result.length();
+        if(size<=0)throw new Exception("下载得到空文件");
+        if(job.size>=0&&size!=job.size)throw new Exception("文件大小不符，断点已保留");
+        if(!job.md5.isEmpty()&&!validMd5(result,job.md5)){
+            throw new Exception("Drive MD5 不匹配，拒绝保存；请尝试重启任务");
+        }
+        Uri uri=Uri.parse(job.uri);
+        current=new Snapshot("saving",job.name,"已验证文件，正在保存到目标位置",
+            size,size,job.id,System.currentTimeMillis());
+        notifyProgress(false);
+        long copied=0;
+        try(InputStream in=new FileInputStream(result);
+            OutputStream out=getContentResolver().openOutputStream(uri,"wt")){
+            if(out==null)throw new Exception("文档提供程序拒绝写入");
+            byte[] buffer=new byte[65536];
+            int n;
+            while((n=in.read(buffer))!=-1){
+                if(requestedStop!=null||timedOut)
+                    throw new Exception("用户中断保存；目标文件可能未完整");
+                out.write(buffer,0,n);copied+=n;
+            }
+            out.flush();
+        }catch(Exception error){
+            throw new Exception("SAF 保存失败，目标可能不完整；已保留本地完整文件："
+                +safe(error.getMessage()));
+        }
+        if(copied!=size)throw new Exception("保存长度校验失败");
+        return size;
+    }
+
+    private static boolean validMd5(File source,String expected)throws Exception {
+        MessageDigest md5=MessageDigest.getInstance("MD5");
+        try(InputStream in=new FileInputStream(source)){
+            byte[] data=new byte[65536];int n;
+            while((n=in.read(data))!=-1)md5.update(data,0,n);
+        }
+        StringBuilder hex=new StringBuilder();
+        for(byte value:md5.digest())hex.append(
+            String.format(Locale.ROOT,"%02x",value&0xff));
+        return hex.toString().equalsIgnoreCase(expected);
+    }
+    private File folder()throws Exception {
+        File location=new File(getFilesDir(),"transfers");
+        if(!location.isDirectory()&&!location.mkdirs())
+            throw new Exception("无法创建持久化下载目录");
+        return location;
+    }
+    private File payload(String id) {
+        return new File(new File(getFilesDir(),"transfers"),id+".bin");
+    }
+    private File controlFile(String id) {
+        return new File(new File(getFilesDir(),"transfers"),id+".bin.aria2");
+    }
+    private void discard(String id){
+        if(id==null||!id.matches("[0-9a-f-]{36}"))return;
+        File f=payload(id),ctrl=controlFile(id);
+        if(f.exists()&&!f.delete())f.deleteOnExit();
+        if(ctrl.exists()&&!ctrl.delete())ctrl.deleteOnExit();
+    }
+    private Notification notification(boolean finished){
+        Snapshot s=current;
+        Intent open=new Intent(this,MainActivity.class)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP|Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            .putExtra("open_tab","transfers");
+        PendingIntent pending=PendingIntent.getActivity(this,9021,open,
+            PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
+        NotificationCompat.Builder b=new NotificationCompat.Builder(this,CHANNEL)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle(finished?"gdirect · 下载队列":s.name.isEmpty()?"gdirect 下载":s.name)
+            .setContentText(s.detail).setOnlyAlertOnce(true).setContentIntent(pending)
+            .setOngoing(!finished).setVisibility(NotificationCompat.VISIBILITY_PRIVATE);
+        if(!finished){
+            if(s.percent()>=0)b.setProgress(100,s.percent(),false);
+            else b.setProgress(0,0,true);
+            if(activeId!=null) {
+                Intent pause=control(this,COMMAND_PAUSE,activeId,-1,null,null);
+                PendingIntent pi=PendingIntent.getService(this,9022,pause,
+                    PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
+                b.addAction(android.R.drawable.ic_media_pause,"暂停",pi);
+            }
+        }else b.setAutoCancel(true).setProgress(0,0,false);
+        return b.build();
+    }
+    private void notifyProgress(boolean finished){
+        getSystemService(NotificationManager.class).notify(NOTIFY_ID,notification(finished));
+    }
+    private static String safe(String raw){
+        if(raw==null||raw.isEmpty())return "操作失败，请检查网络和账号授权";
+        // Avoid echoing the raw aria2 report if it contains headers/URLs.
+        String result=raw.replaceAll("(?i)Bearer\\s+[^\\s]+","Bearer [REDACTED]");
+        return result.length()>220?result.substring(0,220):result;
+    }
+    private static String displaySize(long bytes){
+        if(bytes<1024)return bytes+" B";
+        if(bytes<1048576)return String.format(Locale.ROOT,"%.1f KiB",bytes/1024.0);
+        return String.format(Locale.ROOT,"%.1f MiB",bytes/1048576.0);
+    }
+
+    @Override public void onTimeout(int startId,int fgsType) {
+        timedOut=true;
+        requestedStop=COMMAND_PAUSE;
         MainActivity.nativeCancelDownload();
-        Snapshot snapshot = current;
-        update("failed", snapshot.name, "系统前台下载服务运行时间已达到上限",
-            snapshot.done, snapshot.total, snapshot.id);
-        record("failed", snapshot.name, "系统前台下载服务运行时间已达到上限", 0);
+        String id=activeId;
+        if(id!=null)jobs.change(id,TransferQueue.RUNNING,TransferQueue.PAUSED,
+            "系统前台服务已达到时长上限，请稍后手动恢复");
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf(startId);
     }
-    @Override public void onDestroy() {
-        if (active) MainActivity.nativeCancelDownload();
-        if (progressTick != null) main.removeCallbacks(progressTick);
+    @Override public void onDestroy(){
+        if(activeId!=null) {
+            requestedStop=COMMAND_PAUSE;
+            MainActivity.nativeCancelDownload();
+        }
+        if(progressTick!=null)ui.removeCallbacks(progressTick);
+        credentials.shutdown();
         worker.shutdownNow();
+        jobs.close();
         super.onDestroy();
     }
-    @Override public IBinder onBind(Intent intent) { return null; }
+    @Override public IBinder onBind(Intent intent){return null;}
 }

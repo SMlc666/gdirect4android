@@ -38,7 +38,10 @@ extern "C" int gdirect_download_ex(const char* url, const char* dir, const char*
       {"max-connection-per-server", std::to_string(connections)},
       {"min-split-size", "1M"}, {"connect-timeout", "8"}, {"timeout", "20"},
       {"max-tries", "2"}, {"retry-wait", "1"},
-      {"file-allocation", "none"}, {"auto-save-interval", "5"},
+      {"file-allocation", "none"}, {"auto-save-interval", "2"},
+      // Keep *.aria2 piece bitfields for user-managed pause/resume and
+      // Android process death. Never redownload silently if Range fails.
+      {"always-resume", "true"},
       {"console-log-level", "error"}, {"summary-interval", "0"},
       {"enable-color", "false"}, {"quiet", "true"}
     };

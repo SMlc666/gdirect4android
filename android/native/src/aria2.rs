@@ -86,10 +86,12 @@ fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64, rou
         if CANCEL.load(Ordering::Relaxed) {
             return "ERR\n用户取消 libaria2 下载".into();
         }
-        // Delete incomplete state before trying a different Google endpoint.
-        // Per-file resume/restart journal will be integrated with download jobs.
-        let _ = fs::remove_file(&output);
-        let _ = fs::remove_file(path.join(format!("{name}.aria2")));
+        // Persistent transfer queue: NEVER erase the partial payload or
+        // aria2 bitfield before failover. Reopen the same output+control file
+        // with HTTP Range requests. Old data is retained after cancellation
+        // and Android process death, in app-private filesDir.
+        //
+        // A separate explicit task deletion is responsible for cleanup.
         let arguments = (
             CString::new(url.as_str()), CString::new(path.to_string_lossy().as_bytes()),
             CString::new(name), CString::new(ip.as_str()),

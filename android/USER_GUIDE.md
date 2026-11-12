@@ -71,7 +71,7 @@ fixed-signing keystore injected via GitHub Secrets. CI refuses to distribute
 an APK unless its SHA-256 signing certificate matches the pinned repository
 fingerprint. Never commit or share private signing keys.
 
-**Version status**: v1.0.0-rc2 is a testable release candidate, not yet a
+**Version status**: v1.0.0-rc3 is a testable release candidate, not yet a
 production-stability claim. Real-device validation of Material 3 theme, SAF,
 foreground service, background cancellation, route changes and OAuth remains
 required before a final 1.0 label.
@@ -92,3 +92,39 @@ Settings → Advanced Diagnostics expands *within the same scrollable page*.
 TCP/IP, DNS, TLS, public Google Drive tests and libaria2 status tools use
 ordinary Material cards and display results in that panel. There is no
 fixed-height nested scroll view that traps touch gestures.
+
+## RC3: download manager and resuming
+
+The Downloads tab now lists **every pending and recent file job**. Add several
+files from Drive; they queue and download sequentially through the existing
+single libaria2 engine. You can move a waiting job to the front, pause a
+queued or running job, cancel it, or explicitly resume an interrupted job.
+The number of HTTP connections **within one file** is configurable (1–16);
+this is not yet simultaneous multi-file transfers.
+
+Task metadata is saved in a private SQLite database. Each job has a stable
+UUID and durable `filesDir/transfers/<uuid>.bin` and `<uuid>.bin.aria2`
+files. The latter is aria2's progress/bitfield journal, saved every 2 seconds
+and when the session stops. Pausing and changing IP must not delete it.
+
+After a process death or device restart, open the app, select an available
+network, then tap **继续** for an interrupted task (or **继续全部**). We
+intentionally do not auto-start a forbidden foreground service from boot.
+The app fetches a fresh OAuth access token via the already encrypted refresh
+token. A Testing OAuth refresh token may expire; reauthorize if prompted.
+
+SAF saves are verified for file size/MD5 when provided, but not every
+Android document provider supports persistent URI grants. An interrupted
+copy can leave a partial destination document. If it cannot be reopened,
+create a new destination using the file picker.
+
+## RC3: export and import settings
+
+Settings → **配置备份与迁移** has **导出设置 JSON** and **从 JSON 导入设置**.
+Files are created/read using Android's Storage Access Framework. The JSON
+contains only theme, color, animation, haptics, scanning and download
+preferences with a stable schema version. The importer validates values
+before applying settings. Tokens, OAuth client secrets, Google account data,
+Google Drive content, task database/partial downloads, APK keystore and
+ephemeral Network handles are excluded deliberately. Reconfigure authorization
+on a new device. Never confuse a settings export with a full app backup.

@@ -64,6 +64,7 @@ public final class DesktopOAuth {
     private static final int MAX_JSON = 32768;
 
     private final Activity activity;
+    private final Context context;
     private final SharedPreferences settings;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final SecureRandom random = new SecureRandom();
@@ -78,8 +79,16 @@ public final class DesktopOAuth {
     }
 
     public DesktopOAuth(Activity activity) {
+        this((Context) activity, activity);
+    }
+    public DesktopOAuth(Context context) {
+        this(context, null);
+    }
+    private DesktopOAuth(Context context, Activity activity) {
         this.activity = activity;
-        this.settings = activity.getSharedPreferences("gdirect_oauth_encrypted_v1", Context.MODE_PRIVATE);
+        this.context = context.getApplicationContext();
+        this.settings = this.context.getSharedPreferences(
+            "gdirect_oauth_encrypted_v1", Context.MODE_PRIVATE);
     }
 
     public boolean configured() { return settings.contains(CLIENT); }
@@ -124,6 +133,10 @@ public final class DesktopOAuth {
      */
     public void login(Result callback) {
         if (closed) return;
+        if (activity == null) {
+            uiFailure(callback,"授权需要前台打开 gdirect 应用");
+            return;
+        }
         worker.execute(() -> {
             try {
                 Credentials client = client();
@@ -235,6 +248,33 @@ public final class DesktopOAuth {
                 uiFailure(callback, safe(e));
             }
         });
+    }
+
+    /**
+     * Background worker-only token refresh for persistent downloads.
+     * It decrypts the user-approved refresh token with Android Keystore.
+     * No tokens are saved in the download journal, Intent, or notification.
+     * The caller MUST NOT invoke this on the Android main thread.
+     */
+    public synchronized String getTokenBlocking() throws Exception {
+        if (closed) throw new Exception("OAuth 会话已关闭");
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            throw new IllegalStateException("禁止在 UI 主线程刷新 OAuth");
+        }
+        if (access != null &&
+            SystemClock.elapsedRealtime() + 60000 < accessExpiresAt) return access;
+        Credentials c=client();
+        String ciphertext=settings.getString(REFRESH,null);
+        if (ciphertext == null) {
+            throw new Exception("账号未授权，请在文件页重新登录后恢复下载");
+        }
+        LinkedHashMap<String,String> form=new LinkedHashMap<>();
+        form.put("client_id",c.id);
+        form.put("client_secret",c.secret);
+        form.put("refresh_token",decrypt(ciphertext));
+        form.put("grant_type","refresh_token");
+        acceptTokens(post(TOKEN,form),false);
+        return access;
     }
 
     public void disconnect(Result callback) {
@@ -408,10 +448,18 @@ public final class DesktopOAuth {
     }
 
     private void uiSuccess(Result callback, String value) {
-        activity.runOnUiThread(() -> { if (!closed) callback.success(value); });
+        if (activity!=null) activity.runOnUiThread(() -> {
+            if(!closed)callback.success(value);
+        });
+        else new android.os.Handler(android.os.Looper.getMainLooper())
+            .post(() -> {if(!closed)callback.success(value);});
     }
     private void uiFailure(Result callback, String reason) {
-        activity.runOnUiThread(() -> { if (!closed) callback.failure(reason); });
+        if (activity!=null) activity.runOnUiThread(() -> {
+            if(!closed)callback.failure(reason);
+        });
+        else new android.os.Handler(android.os.Looper.getMainLooper())
+            .post(() -> {if(!closed)callback.failure(reason);});
     }
     private static String safe(Exception e) {
         // Never return a token endpoint raw body, full OAuth URL, or secret.

@@ -130,3 +130,27 @@ before applying settings. Tokens, OAuth client secrets, Google account data,
 Google Drive content, task database/partial downloads, APK keystore and
 ephemeral Network handles are excluded deliberately. Reconfigure authorization
 on a new device. Never confuse a settings export with a full app backup.
+
+## RC4 experiment: Multi-IP Turbo (opt-in)
+
+Enable **设置 → 性能与扫描 → Multi-IP Turbo · 实验性** to distribute new
+TCP connections for a **single file** across up to four separately verified
+Google frontend IPs. This does **not** increase the 1–16 total connection
+budget or download several files simultaneously. The feature is **off by
+default**; the mode is recorded on each queued job and persists across restarts.
+Changing the toggle does not retroactively change existing queued downloads.
+
+The IPv4 pool is filtered by the existing Google address allowlist. The
+original HTTPS hostname, SNI, certificate validation, OAuth token and chosen
+Android Network remain unchanged. The patched aria2 SocketCore chooses
+the next IP only when resolving a Google destination for a new TCP connection.
+The single session owns the standard aria2 partial-file journal and HTTP
+Range resume logic; no parallel process or competing writer touches the file.
+
+If the initial pooled download fails, the native worker falls back to
+single-IP attempts in priority order using the same partial file and
+checkpoint. This is an experimental routing strategy, not a guaranteed
+increase in speed: if the carrier backbone is the shared bottleneck, changing
+frontend IPs may give no benefit. Test with a sufficiently large file:
+same network, time window and **total** connections, comparing Turbo off
+vs on, and verify file MD5 afterward.

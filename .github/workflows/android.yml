@@ -68,7 +68,7 @@ jobs:
             android/native/target/vendor/openssl-3.5.9.tar.gz
             android/native/target/vendor/aria2-1.37.0.tar.xz
             android/native/src/aria2_android_bridge.cc
-          key: gdirect-android-arm64-native-openssl3.5.9-aria2-1.37.0-r1
+          key: gdirect-android-arm64-native-openssl3.5.9-aria2-1.37.0-r2-ip-pool
 
       - name: Build patched libaria2 + OpenSSL Android ARM64
         shell: bash

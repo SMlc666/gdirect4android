@@ -47,6 +47,24 @@ public final class SettingsPortabilityTest {
         assertEquals(128,prefs.scanSize());
     }
 
+    @Test public void multiIpDefaultsOffAndLegacyBackupStillImports() throws Exception {
+        assertFalse(prefs.multiIp());
+        JSONObject backup=SettingsPortability.exportToJson(context);
+        backup.getJSONObject("settings").remove("multi_ip");
+        prefs.multiIp(true);
+        SettingsPortability.importFromJson(context,backup.toString());
+        assertFalse(new UserPrefs(context).multiIp());
+    }
+
+    @Test public void multiIpPreferenceRoundTripsInExport() throws Exception {
+        prefs.multiIp(true);
+        JSONObject backup=SettingsPortability.exportToJson(context);
+        assertTrue(backup.getJSONObject("settings").getBoolean("multi_ip"));
+        prefs.multiIp(false);
+        SettingsPortability.importFromJson(context,backup.toString());
+        assertTrue(new UserPrefs(context).multiIp());
+    }
+
     @Test public void importedSettingsPersistWithoutExportingNetworkHandle() throws Exception {
         JSONObject backup=SettingsPortability.exportToJson(context);
         backup.getJSONObject("settings").put("theme","dark")
@@ -59,5 +77,6 @@ public final class SettingsPortabilityTest {
         assertEquals(123456L,reopened.networkHandle());
         assertFalse(SettingsPortability.exportToJson(context).toString()
             .contains("123456"));
+        assertFalse(reopened.multiIp());
     }
 }

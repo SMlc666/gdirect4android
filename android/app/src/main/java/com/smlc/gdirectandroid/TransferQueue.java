@@ -19,7 +19,7 @@ import java.util.UUID;
  */
 public final class TransferQueue extends SQLiteOpenHelper {
     private static final String DATABASE = "gdirect-transfers-v2.sqlite";
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final String TABLE = "jobs";
     private static final int MAX_JOBS = 500;
     private static final java.util.concurrent.atomic.AtomicBoolean RECOVERED =
@@ -31,12 +31,13 @@ public final class TransferQueue extends SQLiteOpenHelper {
         public String id, fileId, name, md5, uri, route, ips, state, detail;
         public long size, network, done, total, created, updated;
         public int connections;
+        public boolean multiIp;
         public boolean terminal() { return COMPLETED.equals(state)||CANCELLED.equals(state); }
         public JSONObject toJson() throws Exception {
             return new JSONObject()
                 .put("id",id).put("name",name).put("state",state)
                 .put("size",size).put("done",done).put("total",total)
-                .put("route",route).put("detail",detail)
+                .put("route",route).put("detail",detail).put("multi_ip",multiIp)
                 .put("created",created).put("updated",updated);
         }
     }
@@ -46,7 +47,8 @@ public final class TransferQueue extends SQLiteOpenHelper {
             +"id TEXT PRIMARY KEY, file_id TEXT NOT NULL, name TEXT NOT NULL,"
             +"md5 TEXT NOT NULL, uri TEXT NOT NULL, route TEXT NOT NULL,"
             +"ips TEXT NOT NULL, network INTEGER NOT NULL, connections INTEGER NOT NULL,"
-            +"size INTEGER NOT NULL, state TEXT NOT NULL, detail TEXT NOT NULL,"
+            +"size INTEGER NOT NULL, multi_ip INTEGER NOT NULL DEFAULT 0,"
+            +"state TEXT NOT NULL, detail TEXT NOT NULL,"
             +"done INTEGER NOT NULL, total INTEGER NOT NULL, created INTEGER NOT NULL,"
             +"updated INTEGER NOT NULL)");
         db.execSQL("CREATE INDEX jobs_state_created ON jobs (state, created)");
@@ -54,7 +56,11 @@ public final class TransferQueue extends SQLiteOpenHelper {
     @Override public void onUpgrade(SQLiteDatabase db,int oldVersion,int newVersion) {
         // No destructive migration: future upgrades must preserve all task
         // metadata and associated .aria2 partial files.
-        throw new IllegalStateException("任务数据库需要非破坏性迁移");
+        if(oldVersion==1 && newVersion==2) {
+            db.execSQL("ALTER TABLE jobs ADD COLUMN multi_ip INTEGER NOT NULL DEFAULT 0");
+            return;
+        }
+        throw new IllegalStateException("不支持的任务数据库版本："+oldVersion+" -> "+newVersion);
     }
     @Override public void onOpen(SQLiteDatabase db) {
         super.onOpen(db);
@@ -83,12 +89,18 @@ public final class TransferQueue extends SQLiteOpenHelper {
         j.done=c.getLong(c.getColumnIndexOrThrow("done"));
         j.total=c.getLong(c.getColumnIndexOrThrow("total"));
         j.connections=c.getInt(c.getColumnIndexOrThrow("connections"));
+        j.multiIp=c.getInt(c.getColumnIndexOrThrow("multi_ip"))!=0;
         j.created=c.getLong(c.getColumnIndexOrThrow("created"));
         j.updated=c.getLong(c.getColumnIndexOrThrow("updated"));
         return j;
     }
     public synchronized Job add(String fileId,String name,String md5,String uri,
                                 String route,String ips,long network,long size,int connections) {
+        return add(fileId,name,md5,uri,route,ips,network,size,connections,false);
+    }
+    public synchronized Job add(String fileId,String name,String md5,String uri,
+                                String route,String ips,long network,long size,int connections,
+                                boolean multiIp) {
         if (fileId==null || !fileId.matches("[A-Za-z0-9_-]{1,256}")
             || uri==null || !uri.startsWith("content://") || ips==null || ips.isEmpty())
             throw new IllegalArgumentException("下载参数不完整");
@@ -103,6 +115,7 @@ public final class TransferQueue extends SQLiteOpenHelper {
         j.md5=md5==null?"":md5;
         j.uri=uri; j.route=route==null?"所选网络":route; j.ips=ips;
         j.network=network; j.size=size; j.connections=Math.max(1,Math.min(connections,16));
+        j.multiIp=multiIp;
         j.state=QUEUED; j.detail="等待开始"; j.done=0; j.total=size;
         j.created=j.updated=System.currentTimeMillis();
         ContentValues values=new ContentValues();
@@ -110,6 +123,7 @@ public final class TransferQueue extends SQLiteOpenHelper {
         values.put("md5",j.md5);values.put("uri",j.uri);values.put("route",j.route);
         values.put("ips",j.ips);values.put("network",j.network);
         values.put("size",j.size);values.put("connections",j.connections);
+        values.put("multi_ip",j.multiIp?1:0);
         values.put("state",j.state);values.put("detail",j.detail);
         values.put("done",0);values.put("total",j.total);
         values.put("created",j.created);values.put("updated",j.updated);

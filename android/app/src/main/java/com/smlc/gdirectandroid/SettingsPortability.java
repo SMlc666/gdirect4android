@@ -24,7 +24,8 @@ public final class SettingsPortability {
             .put("cache_minutes",p.cacheMinutes())
             .put("fallback_count",p.fallbackCount())
             .put("rank_mode",p.rankMode())
-            .put("download_page",p.startOnDownloads());
+            .put("download_page",p.startOnDownloads())
+            .put("multi_ip",p.multiIp());
         return new JSONObject()
             .put("format","gdirect-android-preferences")
             .put("schema",SCHEMA)
@@ -69,9 +70,11 @@ public final class SettingsPortability {
         boolean animations=bool(data,"animations");
         boolean haptics=bool(data,"haptics");
         boolean downloadPage=bool(data,"download_page");
+        // Existing schema-1 backups remain importable; missing mode = off.
+        boolean multiIp=data.has("multi_ip")?bool(data,"multi_ip"):false;
         UserPrefs prefs=new UserPrefs(ctx);
         if(!prefs.commitImportedSettings(theme,dynamic,animations,haptics,
-                scan,threads,connections,ttl,fallback,rank,downloadPage))
+                scan,threads,connections,ttl,fallback,rank,downloadPage,multiIp))
             throw new IllegalStateException("配置验证成功，但无法持久保存到设备");
     }
 }

@@ -484,6 +484,10 @@ public final class MaterialShell {
         slider(perf,"扫描候选数量",32,768,32,prefs.scanSize(),n->prefs.scanSize(n));
         slider(perf,"扫描并发线程",4,64,4,prefs.scanThreads(),n->prefs.scanThreads(n));
         slider(perf,"libaria2 下载连接数",1,16,1,prefs.connections(),n->prefs.connections(n));
+        MaterialSwitch multi=switchItem(perf,"Multi-IP Turbo · 实验性",
+            "默认关闭。同一文件的连接分配给最多 4 个已验证 Google IP；"
+            +"总连接数不变。失败回退单 IP。设置仅影响新任务。",prefs.multiIp());
+        multi.setOnCheckedChangeListener((button,checked)->prefs.multiIp(checked));
         slider(perf,"优选缓存时间（分钟）",5,240,5,prefs.cacheMinutes(),n->prefs.cacheMinutes(n));
         slider(perf,"备用节点数量",1,8,1,prefs.fallbackCount(),n->prefs.fallbackCount(n));
 
@@ -804,7 +808,8 @@ public final class MaterialShell {
                 "failed".equals(state)?"失败":
                 "completed".equals(state)?"已完成":
                 "cancelled".equals(state)?"已取消":state;
-            TextView stateText=text(stateLabel+" · "+job.optString("route",""),12,false);
+            TextView stateText=text(stateLabel+" · "+job.optString("route","")
+                +(job.optBoolean("multi_ip",false)?" · Multi-IP Turbo":""),12,false);
             stateText.setTextColor("failed".equals(state)?
                 color(android.R.attr.colorError,primary):onSurfaceVariant);
             inner.addView(stateText);

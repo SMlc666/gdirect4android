@@ -79,7 +79,8 @@ public final class MainActivity extends AppCompatActivity {
     private static native String nativeSavePublicDriveSchema(long networkHandle, int cacheFd);
     static native String nativeDownloadDrive(
         String fileId, String accessToken, String caPath,
-        String cacheDir, String cacheName, long networkHandle, String rankedIps, int connections);
+        String cacheDir, String cacheName, long networkHandle, String rankedIps, int connections,
+        boolean multiIp);
     static native String nativeDownloadProgress();
     static native void nativeCancelDownload();
 
@@ -676,7 +677,7 @@ public final class MainActivity extends AppCompatActivity {
                 // It is no longer tied to the Activity's lifecycle.
                 Intent request = TransferService.create(
                     this, destination, entry, network,
-                    networkLabel, ips, userPrefs.connections());
+                    networkLabel, ips, userPrefs.connections(),userPrefs.multiIp());
                 startForegroundService(request);
                 if (shell != null) shell.open(
                     userPrefs.startOnDownloads() ? "transfers" : "files");

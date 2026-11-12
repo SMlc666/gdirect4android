@@ -1,0 +1,76 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Stable signing is explicitly enabled by a trusted GitHub Actions push
+// using an uploaded keystore secret. Local builds without credentials remain
+// ordinary ephemeral debug builds; CI never publishes those as updates.
+def permanentKeyPath = System.getenv('GDIRECT_SIGNING_KEYSTORE_FILE')
+def permanentStorePassword = System.getenv('GDIRECT_SIGNING_STORE_PASSWORD')
+def permanentKeyAlias = System.getenv('GDIRECT_SIGNING_KEY_ALIAS')
+def permanentKeyPassword = System.getenv('GDIRECT_SIGNING_KEY_PASSWORD')
+def permanentSigningReady = permanentKeyPath &&
+    permanentStorePassword && permanentKeyAlias && permanentKeyPassword &&
+    file(permanentKeyPath).isFile()
+
+android {
+    namespace 'com.smlc.gdirectandroid'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.smlc.gdirectandroid'
+        minSdk 26
+        targetSdk 35
+        versionCode 18
+        versionName '1.0.0-rc3'
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    testOptions {
+        unitTests { includeAndroidResources = true }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    signingConfigs {
+        permanent {
+            if (permanentSigningReady) {
+                storeFile file(permanentKeyPath)
+                storePassword permanentStorePassword
+                keyAlias permanentKeyAlias
+                keyPassword permanentKeyPassword
+                storeType 'pkcs12'
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // Critical: the same private certificate signs EVERY published
+            // APK. Never publish default AGP-generated debug keystores.
+            if (permanentSigningReady) {
+                signingConfig signingConfigs.permanent
+            }
+        }
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+
+dependencies {
+    // Material 3 View system with stable AndroidX support. The original
+    // Rust/JNI downloader and Android Network binding remain untouched.
+    implementation "com.google.android.material:material:1.13.0"
+    implementation "androidx.appcompat:appcompat:1.7.1"
+    implementation "androidx.core:core:1.16.0"
+    implementation "androidx.transition:transition:1.5.1"
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.robolectric:robolectric:4.14.1"
+}

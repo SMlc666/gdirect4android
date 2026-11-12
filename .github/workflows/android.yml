@@ -1,0 +1,198 @@
+name: Android APK
+
+on:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+      - 'src/netif.rs'
+      - 'src/store.rs'
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+      - 'src/netif.rs'
+      - 'src/store.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ubuntu-latest already includes Android SDK command-line tools.
+      # setup-android@v3 currently fails by requesting the removed 'tools' package.
+      - name: Add preinstalled SDK tools to PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort -V | tail -n1)"
+          test -n "$SDKMANAGER"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          "$SDKMANAGER" --version
+
+      - name: Install Android SDK and NDK
+        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+
+      - name: Set up Rust Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+          components: rustfmt
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: android/native -> android/native/target
+
+      - name: Unit-test Android Rust HTTP parser on host
+        run: cargo test --manifest-path android/native/Cargo.toml --lib
+
+      - name: Cache Android libaria2 and OpenSSL cross-built archives
+        uses: actions/cache@v4
+        with:
+          path: |
+            android/native/target/android-openssl
+            android/native/target/android-aria2
+            android/native/target/vendor/openssl-3.5.9.tar.gz
+            android/native/target/vendor/aria2-1.37.0.tar.xz
+            android/native/src/aria2_android_bridge.cc
+          key: gdirect-android-arm64-native-openssl3.5.9-aria2-1.37.0-r1
+
+      - name: Build patched libaria2 + OpenSSL Android ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash android/native/build-aria2-android.sh
+          sed -i '/#include <cstdint>/a extern uint64_t gdirect_android_network;' android/native/src/aria2_android_bridge.cc
+          grep -q 'extern uint64_t gdirect_android_network' android/native/src/aria2_android_bridge.cc
+
+      - name: Build Rust JNI library for arm64-v8a
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android26-clang"
+          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android26-clang"
+          export CXX_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android26-clang++"
+          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+          # Catch unresolved symbols before a user sees a dlopen crash.
+          export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,--no-undefined"
+          cargo build --manifest-path android/native/Cargo.toml --target aarch64-linux-android --release
+          JNI_DIR="android/app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$JNI_DIR"
+          JNI_SO="android/native/target/aarch64-linux-android/release/libgdirect_android.so"
+          NDK_CXX="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
+          test -s "$NDK_CXX"
+          cp "$JNI_SO" "$JNI_DIR/libgdirect_android.so"
+          cp "$NDK_CXX" "$JNI_DIR/libc++_shared.so"
+          test -s "$JNI_DIR/libgdirect_android.so"
+          test -s "$JNI_DIR/libc++_shared.so"
+          "$TOOLCHAIN/llvm-readelf" -d "$JNI_SO" > "$RUNNER_TEMP/gdirect-dynamic.txt"
+          grep -F 'libc++_shared.so' "$RUNNER_TEMP/gdirect-dynamic.txt"
+          "$TOOLCHAIN/llvm-readelf" -Ws "$NDK_CXX" > "$RUNNER_TEMP/gdirect-cxx-symbols.txt"
+          grep -F '_ZTISt12length_error' "$RUNNER_TEMP/gdirect-cxx-symbols.txt"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      # Only trusted push/manual workflows may receive the private signing key.
+      # PR builds, including same-repo PRs, receive NO signing secrets.
+      - name: Restore persistent Android signing keystore for trusted builds
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.GDIRECT_ANDROID_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_B64" ]]; then
+            echo "::notice::Permanent Android key not configured. Building for CI checks only; no installable APK will be published."
+            echo "GDIRECT_SIGNING_READY=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          install -d -m 700 "$RUNNER_TEMP/gdirect-signing"
+          KEYSTORE_FILE="$RUNNER_TEMP/gdirect-signing/permanent.p12"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE_FILE"
+          chmod 600 "$KEYSTORE_FILE"
+          test -s "$KEYSTORE_FILE"
+          echo "GDIRECT_SIGNING_KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "GDIRECT_SIGNING_READY=true" >> "$GITHUB_ENV"
+
+      - name: Test durable queue and imported preferences on Android JVM
+        run: gradle -p android :app:testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Assemble Android debug APK (trusted permanent signing)
+        if: github.event_name != 'pull_request' && env.GDIRECT_SIGNING_READY == 'true'
+        shell: bash
+        env:
+          GDIRECT_SIGNING_STORE_PASSWORD: ${{ secrets.GDIRECT_ANDROID_STORE_PASSWORD }}
+          GDIRECT_SIGNING_KEY_ALIAS: ${{ secrets.GDIRECT_ANDROID_KEY_ALIAS }}
+          GDIRECT_SIGNING_KEY_PASSWORD: ${{ secrets.GDIRECT_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ -n "$GDIRECT_SIGNING_STORE_PASSWORD" ]]
+          [[ -n "$GDIRECT_SIGNING_KEY_ALIAS" ]]
+          [[ -n "$GDIRECT_SIGNING_KEY_PASSWORD" ]]
+          gradle -p android :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Assemble APK for compile validation only (not a distributed update)
+        if: github.event_name == 'pull_request' || env.GDIRECT_SIGNING_READY != 'true'
+        shell: bash
+        run: gradle -p android :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Verify JNI library and NDK libc++ runtime packaged in APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -l android/app/build/outputs/apk/debug/app-debug.apk > "$RUNNER_TEMP/gdirect-apk-list.txt"
+          grep -F 'lib/arm64-v8a/libgdirect_android.so' "$RUNNER_TEMP/gdirect-apk-list.txt"
+          grep -F 'lib/arm64-v8a/libc++_shared.so' "$RUNNER_TEMP/gdirect-apk-list.txt"
+
+      - name: Verify stable APK certificate before distribution
+        if: github.event_name != 'pull_request' && env.GDIRECT_SIGNING_READY == 'true'
+        shell: bash
+        env:
+          EXPECTED_SHA256: ${{ vars.GDIRECT_ANDROID_SIGNING_SHA256 }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || {
+            echo "::error::Missing GDIRECT_ANDROID_SIGNING_SHA256 GitHub variable"; exit 1;
+          }
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$APK" \
+            > "$RUNNER_TEMP/gdirect-apk-cert.txt"
+          ACTUAL_SHA256="$(grep 'Signer #1 certificate SHA-256 digest:' \
+            "$RUNNER_TEMP/gdirect-apk-cert.txt" | awk '{print $NF}' | head -n1)"
+          [[ -n "$ACTUAL_SHA256" ]] || {
+            echo "::error::Could not read APK signing certificate"; exit 1;
+          }
+          if [[ "${ACTUAL_SHA256,,}" != "${EXPECTED_SHA256,,}" ]]; then
+            echo "::error::APK certificate changed! Refusing to publish an incompatible update."
+            echo "Expected: $EXPECTED_SHA256"
+            echo "Actual:   $ACTUAL_SHA256"
+            exit 1
+          fi
+          echo "Stable APK signing SHA-256 verified: $ACTUAL_SHA256"
+          echo "STABLE_CERT_SHA256=$ACTUAL_SHA256" >> "$GITHUB_ENV"
+
+      - name: Publish installable stable-signed Android APK
+        if: github.event_name != 'pull_request' && env.GDIRECT_SIGNING_READY == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdirect4android-arm64-stable-signed-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

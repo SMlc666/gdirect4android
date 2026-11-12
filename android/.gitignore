@@ -1,0 +1,16 @@
+.gradle/
+build/
+*/build/
+local.properties
+.idea/
+*.iml
+app/src/main/jniLibs/
+native/target/
+native/Cargo.lock
+
+# NEVER commit private signing keys, CI secrets or signing passwords.
+**/*.keystore
+**/*.jks
+**/*.p12
+**/signing-secrets.env
+**/store-password

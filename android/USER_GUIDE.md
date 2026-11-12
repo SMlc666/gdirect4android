@@ -1,0 +1,77 @@
+# gdirect for Android 1.0 RC
+
+A user-focused Material 3 Google Drive client that preserves the original
+gdirect/libaria2 downloader, verified Google TLS/SNI and explicitly bound
+Android Network selection.
+
+## First launch
+
+1. Open **文件** and expand **账号设置与权限管理**. Import the Desktop
+   OAuth `installed` JSON created in your own Google Cloud project.
+2. Authorize **full Drive scope** in the external browser. The desktop OAuth
+   loopback scheme on Android is experimental and may not work for all browsers.
+3. Open **线路**; choose Wi-Fi, cellular, VPN, or intentionally the default.
+4. Run an opt-in Google frontend scan; use latency or sample throughput
+   ranking, or manually prioritize an authenticated Google frontend.
+5. Return to **文件**; browse, search, create/rename/trash folders or select
+   a file and choose a destination through the Android document picker.
+6. Follow the task in **下载**, or the foreground-service notification.
+   You can switch pages while native libaria2 is busy.
+
+## Modern interface
+
+- Material 3 color and shape system with wallpaper-derived Dynamic Color on
+  Android 12+, system/light/dark themes, responsive bottom navigation and
+  animated page transitions (can be disabled).
+- Separate destinations: Files, Transfers, Routes, Settings.
+- Per-user choices: scanning volume (32–768 IP), concurrency (4–64), original
+  libaria2 connections (1–16), endpoint cache TTL (5–240 min), alternate IPs,
+  haptic feedback, motion, theme, and opening download queue after selection.
+- Network diagnostics remain available under **设置 → 高级诊断** rather than
+  overloading the main experience.
+
+## Download lifecycle and limitations
+
+- Uses an Android `dataSync` foreground service so downloads do not stop
+  just because the Activity is recreated or the user switches tabs.
+- Notification provides ongoing status and cancellation; the task history
+  stores at most 30 non-sensitive records locally.
+- Native aria2 reads the Google Drive media endpoint on the chosen Android
+  Network; the app verifies the reported Drive file length and MD5 (when
+  present) before copying into the selected Storage Access Framework URI.
+- This RC permits **one active file download** at a time. It is not yet a
+  persistent queue, does not resume across process death/device restart, and
+  does not include Google Workspace export. Interrupted final SAF copies may
+  leave a partial destination document.
+- Android 15+ limits `dataSync` foreground service time to six hours
+  cumulatively in 24 hours while the app is backgrounded. The app handles
+  Android 15 timeout; a long-running transfer may need to be restarted.
+- No OAuth token or private client secret is stored in transfer history,
+  notification or logs. Desktop OAuth refresh tokens and imported client
+  credentials remain protected by Android Keystore.
+
+## Network trust
+
+- The selected Android Network is applied via `android_setsocknetwork`
+  before aria2's TCP connects. Drive metadata uses the same pinned-IP pool,
+  checked against bundled Google address ranges and verified with TLS SNI
+  `www.googleapis.com`; no certificate bypass or default VPN fallback.
+- Desktop OAuth external browser and OAuth token exchange/refresh intentionally
+  use the *system default network*, which can be a VPN.
+- IP selection is time-bounded: a Google frontend that worked previously can
+  stop responding; try another verified IP when that happens.
+- The scanner is opt-in and can open at most 64 concurrent sockets.
+
+## Build and signing
+
+GitHub Actions cross-compiles Android ARM64 NDK OpenSSL, original patched
+libaria2 1.37.0 and the Rust JNI layer, runs Rust unit tests, assembles the
+Material 3 Java UI, verifies the bundled C++ ABI, then uses the original
+fixed-signing keystore injected via GitHub Secrets. CI refuses to distribute
+an APK unless its SHA-256 signing certificate matches the pinned repository
+fingerprint. Never commit or share private signing keys.
+
+**Version status**: v1.0.0-rc1 is a testable release candidate, not yet a
+production-stability claim. Real-device validation of Material 3 theme, SAF,
+foreground service, background cancellation, route changes and OAuth remains
+required before a final 1.0 label.

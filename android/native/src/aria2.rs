@@ -48,7 +48,7 @@ fn valid_name(name: &str) -> bool {
     name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
-fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64, route_ips: &str) -> String {
+fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64, route_ips: &str, connections: i32) -> String {
     if !valid_id(id) || !valid_name(name) {
         return "ERR\n文件 ID 或临时文件名非法".into();
     }
@@ -102,7 +102,7 @@ fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64, rou
         let result = unsafe {
             gdirect_download_ex(
                 url.as_ptr(), dir.as_ptr(), name.as_ptr(), ip.as_ptr(),
-                std::ptr::null(), token.as_ptr(), ca.as_ptr(), 8,
+                std::ptr::null(), token.as_ptr(), ca.as_ptr(), connections.clamp(1, 16),
                 Some(progress), std::ptr::null_mut(), false, 0, network,
             )
         };
@@ -112,8 +112,8 @@ fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64, rou
             let len = fs::metadata(&output).map(|m| m.len()).unwrap_or_default();
             if len > 0 {
                 return format!(
-                    "OK\n原版 libaria2 1.37.0 下载成功\n实际 IP：{}\n实际文件：{len} 字节\n设定：8 条 HTTP 分段连接",
-                    ip.to_string_lossy()
+                    "OK\n原版 libaria2 1.37.0 下载成功\n实际 IP：{}\n实际文件：{len} 字节\n设定：{} 条 HTTP 分段连接",
+                    ip.to_string_lossy(), connections.clamp(1,16)
                 );
             }
         }
@@ -130,7 +130,7 @@ fn arg(env: &mut JNIEnv<'_>, input: JString<'_>) -> Result<String, String> {
 pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeDownloadDrive(
     mut env: JNIEnv<'_>, _class: JClass<'_>,
     id: JString<'_>, token: JString<'_>, ca: JString<'_>,
-    dir: JString<'_>, name: JString<'_>, network: jlong, ips: JString<'_>,
+    dir: JString<'_>, name: JString<'_>, network: jlong, ips: JString<'_>, connections: jni::sys::jint,
 ) -> jstring {
     let args = (|| Ok::<_, String>((
         arg(&mut env, id)?, arg(&mut env, token)?,
@@ -139,7 +139,7 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeDownloadD
     )))();
     let report = match args {
         Ok((id, token, ca, dir, name, ips)) =>
-            run(&id, &token, &ca, &dir, &name, network as u64, &ips),
+            run(&id, &token, &ca, &dir, &name, network as u64, &ips, connections),
         Err(e) => format!("ERR\nJNI 参数读取失败：{e}"),
     };
     crate::to_java(&mut env, &report)

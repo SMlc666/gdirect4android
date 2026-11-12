@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+    <style name="AppTheme" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/gdirect_primary</item>
+        <item name="colorOnPrimary">@android:color/white</item>
+        <item name="colorPrimaryContainer">@color/gdirect_primary_container</item>
+        <item name="colorSecondaryContainer">@color/gdirect_secondary_container</item>
+        <item name="colorSurface">@color/gdirect_surface</item>
+        <item name="colorOnSurface">@color/gdirect_on_surface</item>
+        <item name="colorOnSurfaceVariant">@color/gdirect_on_surface_variant</item>
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#3266D3</item>
-        <item name="android:statusBarColor">#152D57</item>
-        <item name="android:navigationBarColor">#F7F9FF</item>
-        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">@color/gdirect_surface</item>
+        <item name="android:navigationBarColor">@color/gdirect_surface</item>
+        <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>

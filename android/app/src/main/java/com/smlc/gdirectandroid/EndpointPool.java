@@ -23,8 +23,8 @@ public final class EndpointPool {
     private static final String[] INITIAL = {
         "142.250.27.100", "108.177.9.138", "64.233.160.100"
     };
-    private static final long TTL_MS = 60 * 60 * 1000L;
     private final SharedPreferences storage;
+    private final UserPrefs userPrefs;
 
     private static final class Candidate {
         final String ip;
@@ -36,6 +36,7 @@ public final class EndpointPool {
     }
     public EndpointPool(Context context) {
         storage = context.getSharedPreferences("gdirect-google-ip-rank-v1", Context.MODE_PRIVATE);
+        userPrefs = new UserPrefs(context);
     }
 
     private static boolean validIp(String ip) {
@@ -57,7 +58,7 @@ public final class EndpointPool {
             JSONObject record = new JSONObject(source);
             long when = record.optLong("saved_at", 0L);
             long elapsed = System.currentTimeMillis() - when;
-            if (elapsed < 0 || elapsed > TTL_MS) return null;
+            if (elapsed < 0 || elapsed > userPrefs.cacheMinutes() * 60_000L) return null;
             if (record.optLong("network_handle", -1L) != handle) return null;
             return record;
         } catch (Exception ignored) {
@@ -152,6 +153,7 @@ public final class EndpointPool {
         if (exists) storage.edit().putString(preferenceKey(handle), choice).apply();
     }
     public synchronized String[] addresses(long handle, boolean speedMode) {
+        final int limit = userPrefs.fallbackCount();
         LinkedHashSet<String> result = new LinkedHashSet<>();
         String preferred = storage.getString(preferenceKey(handle), null);
         List<Candidate> known = sorted(handle, speedMode);
@@ -160,10 +162,10 @@ public final class EndpointPool {
         }
         for (Candidate c : known) {
             result.add(c.ip);
-            if (result.size() >= 8) break;
+            if (result.size() >= limit) break;
         }
         for (String ip : INITIAL) {
-            if (result.size() >= 8) break;
+            if (result.size() >= limit) break;
             result.add(ip);
         }
         return result.toArray(new String[0]);

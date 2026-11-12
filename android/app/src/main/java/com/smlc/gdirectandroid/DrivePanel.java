@@ -1,7 +1,13 @@
 package com.smlc.gdirectandroid;
 
 import android.app.Activity;
-import android.app.AlertDialog;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.textview.MaterialTextView;
+import com.google.android.material.textfield.TextInputEditText;
+import com.google.android.material.textfield.TextInputLayout;
+import com.google.android.material.color.MaterialColors;
 import android.content.Intent;
 import android.graphics.Color;
 import android.net.Network;
@@ -82,20 +88,20 @@ public final class DrivePanel extends LinearLayout {
         this.onDownload = onDownload;
         this.authorization = new DesktopOAuth(activity);
         setOrientation(VERTICAL);
-        setPadding(0, 20, 0, 24);
-        title("Google Drive · 桌面 OAuth + 完整权限（试验性）");
-        title("Drive 元数据、搜索及文件管理现在与 libaria2 共用优选 Google IP；"
-            + "指定 Wi-Fi 的 Socket 在 TCP 前绑定该网络，并验证 Google 证书和域名。"
-            + "外部浏览器 OAuth 和 Token 刷新仍走系统默认网络。");
-        status = title(
-            "权限：完整 Google Drive（读取、创建、修改、移至回收站）。"
-            + "\n桌面客户端的 127.0.0.1 回调不是 Google 推荐的 Android 授权方式。"
-            + "\n请只导入自己创建的桌面 OAuth JSON；不会把凭据写入 APK。");
-        oauthJson = new EditText(activity);
-        oauthJson.setHint("粘贴 Google Desktop app 客户端 JSON（installed）");
+        setPadding(0, 0, 0, 8);
+        title("Google Drive 账号");
+        title("直接浏览云端文件；文件列表和下载均使用线路页面选定的网络及优选 IP。");
+        status = title(authorization.configured()
+            ? "已导入桌面 OAuth 客户端。可以浏览文件，必要时重新授权。"
+            : "首次使用：展开账号设置，导入自己的桌面 OAuth 客户端 JSON，然后授权。");
+        oauthJson = new TextInputEditText(activity);
         oauthJson.setMinLines(2);
         oauthJson.setMaxLines(4);
-        addView(oauthJson);
+        TextInputLayout jsonBox = new TextInputLayout(activity);
+        jsonBox.setHint("Desktop OAuth JSON（也可通过下方导入）");
+        jsonBox.setBoxBackgroundMode(TextInputLayout.BOX_BACKGROUND_OUTLINE);
+        jsonBox.addView(oauthJson);
+        addView(jsonBox);
         Button importJson = button("保存桌面 OAuth JSON（Keystore 加密）");
         importJson.setOnClickListener(v -> {
             try {
@@ -152,15 +158,40 @@ public final class DrivePanel extends LinearLayout {
                 }
             });
         });
-        search = new EditText(activity);
-        search.setHint("在当前文件夹按名称搜索（留空显示全部）");
+        // Keep credentials and rarely used account actions folded away by
+        // default, instead of overwhelming the file browser.
+        LinearLayout accountActions = new LinearLayout(activity);
+        accountActions.setOrientation(VERTICAL);
+        View[] setup = { jsonBox, importJson, fileJson, login, disconnect };
+        for (View v : setup) {
+            if (v.getParent() instanceof android.view.ViewGroup)
+                ((android.view.ViewGroup) v.getParent()).removeView(v);
+            accountActions.addView(v);
+        }
+        Button expandAccount = button("账号设置与权限管理  ▾");
+        addView(accountActions);
+        accountActions.setVisibility(authorization.configured() ? GONE : VISIBLE);
+        expandAccount.setOnClickListener(v -> {
+            boolean visible = accountActions.getVisibility() == VISIBLE;
+            accountActions.setVisibility(visible ? GONE : VISIBLE);
+            expandAccount.setText(visible ? "账号设置与权限管理  ▾" : "收起账号设置  ▴");
+            if (!visible) accountActions.setAlpha(0f);
+            if (!visible) accountActions.animate().alpha(1f).setDuration(200).start();
+        });
+        title("我的文件");
+        search = new TextInputEditText(activity);
         search.setSingleLine(true);
-        addView(search);
+        TextInputLayout searchBox = new TextInputLayout(activity);
+        searchBox.setHint("搜索当前文件夹");
+        searchBox.setBoxBackgroundMode(TextInputLayout.BOX_BACKGROUND_OUTLINE);
+        searchBox.setStartIconDrawable(R.drawable.ic_folder);
+        searchBox.addView(search);
+        addView(searchBox);
         Button runSearch = button("搜索 / 刷新");
         runSearch.setOnClickListener(v -> list(false));
         Button create = button("在当前目录新建文件夹");
         create.setOnClickListener(v -> newFolder());
-        title("提示：长按文件/文件夹可重命名或移至回收站；操作前会二次确认。");
+        title("点击文件下载，点击文件夹进入；长按可重命名或移至回收站。");
         location = title("目录：根目录");
         listing = new LinearLayout(activity);
         listing.setOrientation(VERTICAL);
@@ -173,9 +204,10 @@ public final class DrivePanel extends LinearLayout {
     }
 
     private TextView title(String text) {
-        TextView v = new TextView(activity);
-        v.setTextColor(TEXT);
-        v.setTextSize(15);
+        TextView v = new MaterialTextView(activity);
+        v.setTextColor(MaterialColors.getColor(activity,
+            com.google.android.material.R.attr.colorOnSurface, TEXT));
+        v.setTextSize(14);
         v.setText(text);
         v.setPadding(0, 12, 0, 10);
         addView(v);
@@ -183,9 +215,10 @@ public final class DrivePanel extends LinearLayout {
     }
 
     private Button button(String text) {
-        Button b = new Button(activity);
+        Button b = new MaterialButton(activity);
         b.setAllCaps(false);
         b.setText(text);
+        b.setMinHeight(48);
         addView(b);
         return b;
     }
@@ -277,12 +310,44 @@ public final class DrivePanel extends LinearLayout {
     }
 
     private void addEntry(DriveFile file) {
-        Button b = new Button(activity);
-        b.setAllCaps(false);
-        String type = file.folder() ? "📁 " : "📄 ";
-        String size = file.size >= 0 ? " (" + file.size + " bytes)" : "";
-        b.setText(type + file.name + size);
-        b.setOnClickListener(v -> {
+        MaterialCardView item = new MaterialCardView(activity);
+        item.setRadius(px(16));
+        item.setCardElevation(0f);
+        item.setClickable(true);
+        item.setFocusable(true);
+        item.setCardBackgroundColor(MaterialColors.getColor(activity,
+            com.google.android.material.R.attr.colorSurfaceContainerHigh, 0xfff5f4fc));
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setPadding(px(14),px(15),px(14),px(15));
+        MaterialTextView glyph = new MaterialTextView(activity);
+        glyph.setText(file.folder() ? "📁" : file.googleWorkspace() ? "📝" : "📄");
+        glyph.setTextSize(25);
+        row.addView(glyph, new LinearLayout.LayoutParams(px(42),-2));
+        LinearLayout info = new LinearLayout(activity);
+        info.setOrientation(VERTICAL);
+        MaterialTextView name = new MaterialTextView(activity);
+        name.setText(file.name);
+        name.setTextSize(15);
+        name.setTypeface(null,android.graphics.Typeface.BOLD);
+        name.setMaxLines(2);
+        info.addView(name);
+        MaterialTextView metadata = new MaterialTextView(activity);
+        String size = file.folder() ? "文件夹" : file.size >= 0
+            ? android.text.format.Formatter.formatShortFileSize(activity,file.size)
+            : file.googleWorkspace() ? "Google Workspace 文档" : "云端文件";
+        metadata.setText(size);
+        metadata.setTextColor(MaterialColors.getColor(activity,
+            com.google.android.material.R.attr.colorOnSurfaceVariant, 0xff5f606b));
+        metadata.setTextSize(12);
+        info.addView(metadata);
+        row.addView(info,new LinearLayout.LayoutParams(0,-2,1));
+        item.addView(row);
+        LinearLayout.LayoutParams itemParams=new LinearLayout.LayoutParams(-1,-2);
+        itemParams.bottomMargin=px(8);
+        listing.addView(item,itemParams);
+        item.setOnClickListener(v -> {
             if (file.folder()) {
                 folders.push(activeFolder);
                 activeFolder = file.id;
@@ -296,18 +361,17 @@ public final class DrivePanel extends LinearLayout {
                 withToken(token -> onDownload.start(file, token));
             }
         });
-        b.setOnLongClickListener(v -> {
+        item.setOnLongClickListener(v -> {
             showFileActions(file);
             return true;
         });
-        listing.addView(b);
     }
 
     private void newFolder() {
         EditText nameInput = new EditText(activity);
         nameInput.setSingleLine(true);
         nameInput.setHint("新文件夹名称");
-        new AlertDialog.Builder(activity)
+        new MaterialAlertDialogBuilder(activity)
             .setTitle("在当前目录新建文件夹")
             .setView(nameInput)
             .setNegativeButton("取消", null)
@@ -325,7 +389,7 @@ public final class DrivePanel extends LinearLayout {
     }
 
     private void showFileActions(DriveFile entry) {
-        new AlertDialog.Builder(activity)
+        new MaterialAlertDialogBuilder(activity)
             .setTitle(entry.name)
             .setItems(new String[] { "重命名", "移至回收站" }, (dialog, index) -> {
                 if (index == 0) renameFile(entry);
@@ -337,7 +401,7 @@ public final class DrivePanel extends LinearLayout {
         EditText rename = new EditText(activity);
         rename.setSingleLine(true);
         rename.setText(entry.name);
-        new AlertDialog.Builder(activity).setTitle("重命名文件")
+        new MaterialAlertDialogBuilder(activity).setTitle("重命名文件")
             .setView(rename)
             .setNegativeButton("取消", null)
             .setPositiveButton("重命名", (dialog, ignored) -> {
@@ -354,7 +418,7 @@ public final class DrivePanel extends LinearLayout {
     }
 
     private void trashFile(DriveFile entry) {
-        new AlertDialog.Builder(activity)
+        new MaterialAlertDialogBuilder(activity)
             .setTitle("确认移至回收站？")
             .setMessage("将「" + entry.name + "」移至 Google Drive 回收站。不会执行永久删除。")
             .setNegativeButton("取消", null)
@@ -461,6 +525,10 @@ public final class DrivePanel extends LinearLayout {
             + " 个 Google 优选 IP 均未完成 TLS/HTTP 请求"
             + (last == null ? "" : "；最后错误：" + last.getMessage())
             + "。不会回退到 VPN。");
+    }
+
+    private int px(int amount) {
+        return Math.round(amount * getResources().getDisplayMetrics().density);
     }
 
     private static String enc(String raw) throws Exception {

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="gdirect_primary">#465EB3</color>
+    <color name="gdirect_primary_container">#DEE3FF</color>
+    <color name="gdirect_secondary_container">#E5E8F5</color>
+    <color name="gdirect_surface">#FCF8FF</color>
+    <color name="gdirect_on_surface">#1B1B21</color>
+    <color name="gdirect_on_surface_variant">#484A55</color>
+</resources>

@@ -1,6 +1,14 @@
 package com.smlc.gdirectandroid;
 
-import android.app.Activity;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.app.AppCompatDelegate;
+import com.google.android.material.color.DynamicColors;
+import com.google.android.material.button.MaterialButton;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.Build;
+import android.Manifest;
+import android.content.pm.PackageManager;
 import java.security.MessageDigest;
 import java.io.FileOutputStream;
 import android.content.Intent;
@@ -37,7 +45,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /** Diagnostics: Android selects a Network; Rust binds the TCP socket via NDK. */
-public final class MainActivity extends Activity {
+public final class MainActivity extends AppCompatActivity {
     private static final int INK = Color.rgb(24, 39, 65);
     private static final int BLUE = Color.rgb(42, 92, 194);
     private static final int MUTED = Color.rgb(91, 106, 129);
@@ -69,11 +77,11 @@ public final class MainActivity extends Activity {
         long networkHandle, String pinnedIp);
     private static native String nativeTransferSample(long networkHandle);
     private static native String nativeSavePublicDriveSchema(long networkHandle, int cacheFd);
-    private static native String nativeDownloadDrive(
+    static native String nativeDownloadDrive(
         String fileId, String accessToken, String caPath,
-        String cacheDir, String cacheName, long networkHandle, String rankedIps);
-    private static native String nativeDownloadProgress();
-    private static native void nativeCancelDownload();
+        String cacheDir, String cacheName, long networkHandle, String rankedIps, int connections);
+    static native String nativeDownloadProgress();
+    static native void nativeCancelDownload();
 
     private static final class Choice {
         final Network network; // null means system default (potentially VPN).
@@ -88,6 +96,15 @@ public final class MainActivity extends Activity {
     }
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final Handler ticker = new Handler(Looper.getMainLooper());
+    private final Runnable updateUi = new Runnable() {
+        @Override public void run() {
+            if (shell != null) shell.refreshTransfers();
+            ticker.postDelayed(this, 1000L);
+        }
+    };
+    private UserPrefs userPrefs;
+    private MaterialShell shell;
     private final List<Choice> choices = new ArrayList<>();
     private ConnectivityManager cm;
     private Spinner spinner;
@@ -121,7 +138,17 @@ public final class MainActivity extends Activity {
     private Button manualTlsButton;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
+        userPrefs = new UserPrefs(this);
+        switch(userPrefs.theme()) {
+            case "light": AppCompatDelegate.setDefaultNightMode(
+                AppCompatDelegate.MODE_NIGHT_NO); break;
+            case "dark": AppCompatDelegate.setDefaultNightMode(
+                AppCompatDelegate.MODE_NIGHT_YES); break;
+            default: AppCompatDelegate.setDefaultNightMode(
+                AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM);
+        }
         super.onCreate(savedInstanceState);
+        if (userPrefs.dynamicColor()) DynamicColors.applyToActivityIfAvailable(this);
         cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
         endpointPool = new EndpointPool(this);
         ScrollView scroll = new ScrollView(this);
@@ -133,7 +160,7 @@ public final class MainActivity extends Activity {
 
         TextView title = text(root, "gdirect for Android", 27, INK);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
-        text(root, "Milestone 9.2 · Google IP 广域扫描 + 双通道优选", 14, BLUE);
+        text(root, "v1.0 · 网络诊断（高级模式）", 14, BLUE);
         text(root, "选择系统默认、Wi-Fi 或移动网络，分别测试 Google。物理网卡不再依赖 Linux 路由表。", 15, MUTED);
         text(root, LOADED ? nativeVersion() : "原生库加载失败：" + LOAD_ERROR,
             13, LOADED ? BLUE : Color.RED);
@@ -152,14 +179,16 @@ public final class MainActivity extends Activity {
             new String[] {
                 "快速 · 128 IP / 16线程",
                 "标准 · 384 IP / 32线程",
-                "深度 · 768 IP / 64线程"
+                "深度 · 768 IP / 64线程",
+                "自定义 · 使用设置中的扫描参数"
             }));
-        scanLevel.setSelection(1);
+        scanLevel.setSelection(3);
         root.addView(scanLevel);
         text(root, "Google 节点优选策略", 16, INK);
         rankPreference = new Spinner(this);
         rankPreference.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
             new String[] { "低延迟优先（Drive API）", "传输速度优先（大文件）" }));
+        rankPreference.setSelection(userPrefs.rankMode());
         root.addView(rankPreference);
         scanButton = button(root, "扫描 Google IP 并自动优选（真 TLS + Drive API）");
         Button scanProgressButton = button(root, "查看扫描进度");
@@ -192,6 +221,7 @@ public final class MainActivity extends Activity {
             @Override public void onNothingSelected(AdapterView<?> parent) {}
             @Override public void onItemSelected(
                 AdapterView<?> parent, android.view.View view, int position, long id) {
+                userPrefs.rankMode(position);
                 updateEndpointChoices();
             }
         });
@@ -283,8 +313,8 @@ public final class MainActivity extends Activity {
             Choice choice = selected();
             if (choice == null) return;
             int level = scanLevel.getSelectedItemPosition();
-            int[] sizes = { 128, 384, 768 };
-            int[] threads = { 16, 32, 64 };
+            int[] sizes = { 128, 384, 768, userPrefs.scanSize() };
+            int[] threads = { 16, 32, 64, userPrefs.scanThreads() };
             int index = Math.max(0, Math.min(level, sizes.length - 1));
             boolean speed = speedPreferred();
             probe(() -> {
@@ -327,12 +357,42 @@ public final class MainActivity extends Activity {
             }
             probe(() -> choice.title + "\n" + nativeProbeIp(address, choice.handle));
         });
-        setContentView(scroll);
+        MaterialShell.Slots slots = new MaterialShell.Slots();
+        slots.drive = drivePanel;
+        slots.diagnostics = scroll;
+        slots.network = spinner;
+        slots.scanPreset = scanLevel;
+        slots.ranking = rankPreference;
+        slots.preferredIp = preferredIp;
+        slots.refresh = refreshButton;
+        slots.scan = scanButton;
+        slots.scanCancel = scanCancelButton;
+        slots.scanProgress = scanProgressButton;
+        slots.networkDetails = details;
+        slots.endpointSummary = endpointSummary;
+        slots.scanResult = result;
+        shell = new MaterialShell(this, userPrefs, slots);
         if (savedInstanceState != null) {
             pendingSaveNetwork = savedInstanceState.getLong("pendingSaveNetwork", -1L);
             pendingSaveNetworkLabel = savedInstanceState.getString("pendingSaveNetworkLabel", "");
         }
         refresh();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        ticker.removeCallbacks(updateUi);
+        ticker.post(updateUi);
+    }
+    @Override protected void onPause() {
+        ticker.removeCallbacks(updateUi);
+        super.onPause();
+    }
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (shell != null) shell.open(
+            intent == null ? "files" : intent.getStringExtra("open_tab"));
     }
 
     private Choice selected() {
@@ -506,7 +566,28 @@ public final class MainActivity extends Activity {
             String networkLabel = pendingDriveNetworkLabel;
             String ips = pendingDriveIps;
             clearPendingDrive();
-            probe(() -> downloadDriveFile(destination, entry, token, network, networkLabel, ips));
+            if (!LOADED) {
+                if (shell != null) shell.notice("原生下载器尚未加载，无法开始任务");
+                return;
+            }
+            try {
+                // Download service is user-initiated by SAF file selection.
+                // It is no longer tied to the Activity's lifecycle.
+                Intent request = TransferService.create(
+                    this, destination, entry, token, network,
+                    networkLabel, ips, userPrefs.connections());
+                startForegroundService(request);
+                if (shell != null) shell.open(
+                    userPrefs.startOnDownloads() ? "transfers" : "files");
+                if (Build.VERSION.SDK_INT >= 33 &&
+                    checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(
+                        new String[] { Manifest.permission.POST_NOTIFICATIONS }, 7109);
+                }
+            } catch (Exception error) {
+                if (shell != null) shell.notice("无法开始下载：" + error.getMessage());
+            }
             return;
         }
         if (requestCode != REQUEST_CREATE_FILE) return;
@@ -532,79 +613,6 @@ public final class MainActivity extends Activity {
         pendingDriveNetwork = -1L;
         pendingDriveNetworkLabel = "";
         pendingDriveIps = "";
-    }
-
-    private File googleCaFile() throws Exception {
-        File ca = new File(getNoBackupFilesDir(), "gts-roots.pem");
-        if (ca.isFile() && ca.length() > 1000) return ca;
-        try (InputStream input = getAssets().open("gts-roots.pem");
-             OutputStream output = new FileOutputStream(ca)) {
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = input.read(buf)) != -1) output.write(buf, 0, n);
-            output.flush();
-        }
-        return ca;
-    }
-
-    private String downloadDriveFile(
-            Uri destination, DrivePanel.DriveFile entry, String token,
-            long network, String label, String lockedIps) throws Exception {
-        if (entry.googleWorkspace()) return "此类型为 Google Workspace 文档，需导出功能，不支持 alt=media。";
-        if (token == null || token.isEmpty()) return "Google access token 已过期，请重新授权。";
-        File work = new File(getCacheDir(), "aria2-download");
-        if (!work.exists() && !work.mkdirs()) throw new java.io.IOException("无法创建临时下载目录");
-        final String tempName = "selected-drive-file.bin";
-        File downloaded = new File(work, tempName);
-        File checkpoint = new File(work, tempName + ".aria2");
-        try {
-            String report = nativeDownloadDrive(
-                entry.id, token, googleCaFile().getAbsolutePath(),
-                work.getAbsolutePath(), tempName, network, lockedIps);
-            if (!report.startsWith("OK\n")) {
-                return label + "\n" + report + "\n未向 Android 文档写入不完整的下载内容。";
-            }
-            long actual = downloaded.length();
-            if (actual == 0) return "libaria2 显示完成，但实际输出文件为空。";
-            if (entry.size >= 0 && entry.size != actual) {
-                return "下载大小与 Drive 元数据不符：" + actual + " / " + entry.size;
-            }
-            if (!entry.md5.isEmpty()) {
-                MessageDigest md5 = MessageDigest.getInstance("MD5");
-                try (InputStream source = new FileInputStream(downloaded)) {
-                    byte[] buf = new byte[32768];
-                    int n;
-                    while ((n = source.read(buf)) != -1) md5.update(buf, 0, n);
-                }
-                StringBuilder hex = new StringBuilder();
-                for (byte b : md5.digest()) hex.append(String.format(java.util.Locale.ROOT, "%02x", b & 0xff));
-                if (!entry.md5.equalsIgnoreCase(hex.toString())) {
-                    return "MD5 文件校验未通过；拒绝将可疑内容保存到用户文档。";
-                }
-            }
-            long written = 0;
-            try (InputStream source = new FileInputStream(downloaded);
-                 OutputStream target = getContentResolver().openOutputStream(destination, "wt")) {
-                if (target == null) throw new java.io.IOException("系统没有提供文档写入流");
-                byte[] buf = new byte[32768];
-                int n;
-                while ((n = source.read(buf)) != -1) {
-                    target.write(buf, 0, n);
-                    written += n;
-                }
-                target.flush();
-            } catch (Exception e) {
-                throw new java.io.IOException(
-                    "libaria2 下载成功，但保存到 SAF 文档失败；目标文件可能不完整：" + e, e);
-            }
-            if (written != actual) throw new java.io.IOException("SAF 写入字节数不匹配");
-            return "✅ Google Drive 文件已保存\n" + entry.name + "\n网络：" + label
-                + "\n" + report + "\nSAF 写入：" + written + " 字节"
-                + (entry.md5.isEmpty() ? "\nDrive 没有提供 MD5 元数据" : "\nMD5 校验通过");
-        } finally {
-            if (!downloaded.delete()) downloaded.deleteOnExit();
-            if (!checkpoint.delete()) checkpoint.deleteOnExit();
-        }
     }
 
     private String saveToDocument(Uri destination, long handle, String label) throws Exception {
@@ -662,7 +670,8 @@ public final class MainActivity extends Activity {
         saveButton.setEnabled(false);
         manualTlsButton.setEnabled(false);
         refreshButton.setEnabled(false);
-        result.setText("正在检测，请稍候…");
+        result.setText("任务正在运行…");
+        if(shell != null) shell.open("routes");
         worker.execute(() -> {
             String output;
             try { output = work.execute(); }
@@ -672,6 +681,8 @@ public final class MainActivity extends Activity {
             runOnUiThread(() -> {
                 if (isDestroyed() || isFinishing()) return;
                 result.setText(report);
+                if(shell != null) shell.notice(
+                    report.length() > 70 ? "操作已完成，可在线路页面查看详情" : report);
                 googleButton.setEnabled(LOADED);
                 ipButton.setEnabled(LOADED);
                 tlsButton.setEnabled(LOADED);
@@ -685,7 +696,7 @@ public final class MainActivity extends Activity {
     }
 
     private TextView text(LinearLayout root, String value, int sp, int color) {
-        TextView tv = new TextView(this);
+        TextView tv = new com.google.android.material.textview.MaterialTextView(this);
         tv.setText(value);
         tv.setTextColor(color);
         tv.setTextSize(sp);
@@ -694,7 +705,7 @@ public final class MainActivity extends Activity {
         return tv;
     }
     private Button button(LinearLayout root, String title) {
-        Button btn = new Button(this);
+        Button btn = new MaterialButton(this);
         btn.setText(title);
         btn.setAllCaps(false);
         btn.setTextColor(Color.WHITE);
@@ -706,6 +717,7 @@ public final class MainActivity extends Activity {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
     @Override protected void onDestroy() {
+        ticker.removeCallbacks(updateUi);
         worker.shutdownNow();
         if (drivePanel != null) drivePanel.shutdown();
         super.onDestroy();

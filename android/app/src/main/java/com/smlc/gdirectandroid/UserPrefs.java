@@ -31,6 +31,8 @@ public final class UserPrefs {
     public void fallbackCount(int count) { prefs.edit().putInt("fallback_count", Math.max(1, Math.min(8, count))).apply(); }
     public boolean startOnDownloads() { return prefs.getBoolean("download_page", true); }
     public void startOnDownloads(boolean value) { prefs.edit().putBoolean("download_page", value).apply(); }
+    public long networkHandle() { return prefs.getLong("network_handle", 0L); }
+    public void networkHandle(long handle) { prefs.edit().putLong("network_handle", handle).apply(); }
     public int rankMode() { return range("rank_mode", 0, 0, 1); }
     public void rankMode(int value) { prefs.edit().putInt("rank_mode", Math.max(0, Math.min(1, value))).apply(); }
     public boolean haptics() { return prefs.getBoolean("haptics", true); }

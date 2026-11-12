@@ -132,6 +132,7 @@ public final class TransferService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) { stopSelfResult(startId); return START_NOT_STICKY; }
         if (ACTION_CANCEL.equals(intent.getAction())) {
+            if (!active) { stopSelfResult(startId); return START_NOT_STICKY; }
             cancelled = true;
             MainActivity.nativeCancelDownload();
             Snapshot s = current;

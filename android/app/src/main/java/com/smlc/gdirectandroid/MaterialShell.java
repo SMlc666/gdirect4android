@@ -73,7 +73,7 @@ public final class MaterialShell {
         this.activity = activity;
         this.prefs = prefs;
         this.slots = slots;
-        primary = color(com.google.android.material.R.attr.colorPrimary, 0xff5365bc);
+        primary = color(androidx.appcompat.R.attr.colorPrimary, 0xff5365bc);
         onSurface = color(com.google.android.material.R.attr.colorOnSurface, 0xff1b1b21);
         surface = color(com.google.android.material.R.attr.colorSurface, Color.WHITE);
         onSurfaceVariant = color(com.google.android.material.R.attr.colorOnSurfaceVariant, 0xff555660);

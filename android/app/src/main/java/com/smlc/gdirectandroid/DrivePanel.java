@@ -10,6 +10,7 @@ import com.google.android.material.textfield.TextInputLayout;
 import com.google.android.material.color.MaterialColors;
 import android.content.Intent;
 import android.graphics.Color;
+import android.view.View;
 import android.net.Network;
 import android.widget.Button;
 import android.widget.EditText;
@@ -62,6 +63,7 @@ public final class DrivePanel extends LinearLayout {
 
     private final Activity activity;
     private final Supplier<Network> chosenNetwork;
+    private final Supplier<Boolean> validNetwork;
     private final EndpointPool endpointPool;
     private final Supplier<Boolean> speedPriority;
     private volatile String lastVerifiedIp = "未连接";
@@ -78,11 +80,13 @@ public final class DrivePanel extends LinearLayout {
     private boolean destroyed = false;
 
     public DrivePanel(
-            Activity activity, Supplier<Network> chosenNetwork, EndpointPool endpointPool,
+            Activity activity, Supplier<Network> chosenNetwork,
+            Supplier<Boolean> validNetwork, EndpointPool endpointPool,
             Supplier<Boolean> speedPriority, DownloadHandler onDownload) {
         super(activity);
         this.activity = activity;
         this.chosenNetwork = chosenNetwork;
+        this.validNetwork = validNetwork;
         this.endpointPool = endpointPool;
         this.speedPriority = speedPriority;
         this.onDownload = onDownload;
@@ -225,6 +229,10 @@ public final class DrivePanel extends LinearLayout {
 
     private void withToken(Consumer<String> action) {
         if (destroyed) return;
+        if (!validNetwork.get()) {
+            status.setText("先在线路页面重新选择有效的网络。原线路可能已断开，不会自动使用 VPN。");
+            return;
+        }
         authorization.getToken(new DesktopOAuth.Result() {
             @Override public void success(String token) {
                 if (!destroyed) action.accept(token);

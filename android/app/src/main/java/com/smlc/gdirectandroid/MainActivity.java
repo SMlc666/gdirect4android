@@ -92,6 +92,11 @@ public final class MainActivity extends AppCompatActivity {
             this.handle = network == null ? 0L : network.getNetworkHandle();
             this.title = title;
         }
+        Choice(String title, long unavailable) {
+            this.network = null;
+            this.handle = unavailable;
+            this.title = title;
+        }
         @Override public String toString() { return title; }
     }
 
@@ -248,7 +253,8 @@ public final class MainActivity extends AppCompatActivity {
         drivePanel = new DrivePanel(this, () -> {
             Choice choice = selected();
             return choice == null ? null : choice.network;
-        }, endpointPool, () -> speedPreferred(), (entry, token) -> {
+        }, () -> selected() != null, endpointPool,
+            () -> speedPreferred(), (entry, token) -> {
             if (!LOADED) {
                 result.setText("原生 libaria2 未加载，无法执行文件下载：" + LOAD_ERROR);
                 return;
@@ -397,13 +403,14 @@ public final class MainActivity extends AppCompatActivity {
 
     private Choice selected() {
         int index = spinner.getSelectedItemPosition();
-        return index >= 0 && index < choices.size() ? choices.get(index) : null;
+        Choice choice = index >= 0 && index < choices.size() ? choices.get(index) : null;
+        return choice != null && choice.handle >= 0 ? choice : null;
     }
 
     @SuppressWarnings("deprecation") // Explicit refresh only; service will use NetworkCallback.
     private void refresh() {
         Choice old = selected();
-        long oldHandle = old == null ? 0L : old.handle;
+        long oldHandle = old == null ? userPrefs.networkHandle() : old.handle;
         choices.clear();
         choices.add(new Choice(null, "系统默认（可能经过 VPN）"));
         StringBuilder summary = new StringBuilder();
@@ -433,6 +440,15 @@ public final class MainActivity extends AppCompatActivity {
                 summary.append("\n");
             }
         }
+        boolean routeFound = oldHandle == 0L;
+        for (Choice candidate : choices) {
+            if (candidate.handle == oldHandle) routeFound = true;
+        }
+        if (!routeFound) {
+            choices.add(0, new Choice("⚠ 原网络已断开 · 请选择新线路", -1L));
+            if (result != null) result.setText(
+                "上次选择的 Android 网络不再可用。请在线路页面重新选择；为避免走错 VPN，本次访问已被阻止。");
+        }
         ArrayAdapter<Choice> adapter = new ArrayAdapter<>(
             this, android.R.layout.simple_spinner_item, choices);
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
@@ -445,6 +461,8 @@ public final class MainActivity extends AppCompatActivity {
             @Override public void onNothingSelected(AdapterView<?> parent) {}
             @Override public void onItemSelected(
                 AdapterView<?> parent, android.view.View view, int position, long id) {
+                Choice chosen = selected();
+                if (chosen != null) userPrefs.networkHandle(chosen.handle);
                 updateEndpointChoices();
             }
         });

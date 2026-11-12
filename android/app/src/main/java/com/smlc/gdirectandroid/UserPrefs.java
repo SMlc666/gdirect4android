@@ -63,4 +63,24 @@ public final class UserPrefs {
     public void rankMode(int value) { prefs.edit().putInt("rank_mode", Math.max(0, Math.min(1, value))).apply(); }
     public boolean haptics() { return prefs.getBoolean("haptics", true); }
     public void haptics(boolean value) { prefs.edit().putBoolean("haptics", value).apply(); }
+
+    /** Commit a fully validated import in one durable SharedPreferences edit. */
+    boolean commitImportedSettings(String theme,boolean dynamic,boolean motion,
+                                   boolean haptic,int scan,int threads,
+                                   int connections,int ttl,int fallback,
+                                   int rank,boolean downloadPage) {
+        return prefs.edit()
+            .putString("theme",theme)
+            .putBoolean("dynamic_color",dynamic)
+            .putBoolean("animations",motion)
+            .putBoolean("haptics",haptic)
+            .putInt("scan_size",scan)
+            .putInt("scan_threads",threads)
+            .putInt("connections",connections)
+            .putInt("cache_minutes",ttl)
+            .putInt("fallback_count",fallback)
+            .putInt("rank_mode",rank)
+            .putBoolean("download_page",downloadPage)
+            .commit();
+    }
 }

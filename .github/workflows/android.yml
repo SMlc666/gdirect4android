@@ -131,6 +131,9 @@ jobs:
           echo "GDIRECT_SIGNING_KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
           echo "GDIRECT_SIGNING_READY=true" >> "$GITHUB_ENV"
 
+      - name: Test durable queue and imported preferences on Android JVM
+        run: gradle -p android :app:testDebugUnitTest --no-daemon --stacktrace
+
       - name: Assemble Android debug APK (trusted permanent signing)
         if: github.event_name != 'pull_request' && env.GDIRECT_SIGNING_READY == 'true'
         shell: bash

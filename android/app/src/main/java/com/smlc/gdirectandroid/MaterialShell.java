@@ -79,6 +79,8 @@ public final class MaterialShell {
     private TextView footnote;
     private int currentPage = -1;
     private String lastHistoryKey = "";
+    private static final int TRANSFER_PAGE_SIZE = 40;
+    private int visibleTransferCount = TRANSFER_PAGE_SIZE;
     private String lastTransferSignature = "";
 
     private int primary, onSurface, surface, onSurfaceVariant, secondaryContainer;
@@ -783,7 +785,7 @@ public final class MaterialShell {
             history.addView(hint);
             return;
         }
-        for(int i=0;i<Math.min(100,queued.length());i++){
+        for(int i=0;i<Math.min(visibleTransferCount,queued.length());i++){
             JSONObject job=queued.optJSONObject(i);
             if(job==null)continue;
             final String id=job.optString("id");
@@ -837,6 +839,17 @@ public final class MaterialShell {
             LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
             lp.topMargin=dp(9);
             history.addView(card,lp);
+        }
+        if(queued.length()>visibleTransferCount){
+            MaterialButton more=action("加载更多任务 · 已显示 "
+                +visibleTransferCount+" / "+queued.length());
+            more.setOnClickListener(v->{
+                visibleTransferCount=Math.min(visibleTransferCount+TRANSFER_PAGE_SIZE,
+                    queued.length());
+                lastHistoryKey="";
+                refreshTransfers();
+            });
+            history.addView(more);
         }
     }
     private void taskButton(LinearLayout row,String text,String command,String id){

@@ -36,9 +36,9 @@ public final class SettingsPortability {
         Object v=j.opt(name);
         if(!(v instanceof Integer||v instanceof Long))
             throw new IllegalArgumentException("字段 "+name+" 必须是整数");
-        int n=((Number)v).intValue();
+        long n=((Number)v).longValue();
         if(n<min||n>max)throw new IllegalArgumentException(name+" 超出范围");
-        return n;
+        return (int)n;
     }
     private static boolean bool(JSONObject j,String name)throws Exception {
         Object v=j.opt(name);
@@ -70,16 +70,8 @@ public final class SettingsPortability {
         boolean haptics=bool(data,"haptics");
         boolean downloadPage=bool(data,"download_page");
         UserPrefs prefs=new UserPrefs(ctx);
-        prefs.theme(theme);
-        prefs.dynamicColor(dynamic);
-        prefs.animations(animations);
-        prefs.haptics(haptics);
-        prefs.scanSize(scan);
-        prefs.scanThreads(threads);
-        prefs.connections(connections);
-        prefs.cacheMinutes(ttl);
-        prefs.fallbackCount(fallback);
-        prefs.rankMode(rank);
-        prefs.startOnDownloads(downloadPage);
+        if(!prefs.commitImportedSettings(theme,dynamic,animations,haptics,
+                scan,threads,connections,ttl,fallback,rank,downloadPage))
+            throw new IllegalStateException("配置验证成功，但无法持久保存到设备");
     }
 }

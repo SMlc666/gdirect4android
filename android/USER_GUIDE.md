@@ -34,15 +34,17 @@ Android Network selection.
 
 - Uses an Android `dataSync` foreground service so downloads do not stop
   just because the Activity is recreated or the user switches tabs.
-- Notification provides ongoing status and cancellation; the task history
-  stores at most 30 non-sensitive records locally.
+- Notification provides ongoing status and cancellation. Up to 500
+  non-sensitive task records are stored in SQLite; the download list renders
+  40 cards at a time with a Load more control.
 - Native aria2 reads the Google Drive media endpoint on the chosen Android
   Network; the app verifies the reported Drive file length and MD5 (when
   present) before copying into the selected Storage Access Framework URI.
-- This RC permits **one active file download** at a time. It is not yet a
-  persistent queue, does not resume across process death/device restart, and
-  does not include Google Workspace export. Interrupted final SAF copies may
-  leave a partial destination document.
+- This RC permits **one active file download** at a time, with other files in
+  a persistent queue. SQLite jobs and aria2 checkpoints survive process death
+  or device restart, but resuming requires an explicit action after reopening.
+  Google Workspace export is not supported yet. Interrupted final SAF copies
+  may leave a partial destination document.
 - Android 15+ limits `dataSync` foreground service time to six hours
   cumulatively in 24 hours while the app is backgrounded. The app handles
   Android 15 timeout; a long-running transfer may need to be restarted.

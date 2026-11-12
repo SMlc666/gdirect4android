@@ -134,7 +134,7 @@ public final class TransferQueue extends SQLiteOpenHelper {
         try(Cursor c=getReadableDatabase().query(TABLE,null,null,null,null,null,
             "CASE state WHEN 'running' THEN 0 WHEN 'queued' THEN 1 "
             +"WHEN 'paused' THEN 2 WHEN 'failed' THEN 3 ELSE 4 END,"
-            +"CASE WHEN state='queued' THEN created END ASC,updated DESC","200")) {
+            +"CASE WHEN state='queued' THEN created END ASC,updated DESC",null)) {
             while(c.moveToNext()) {
                 try {result.put(read(c).toJson());}catch(Exception ignored) {}
             }
@@ -160,17 +160,21 @@ public final class TransferQueue extends SQLiteOpenHelper {
         getWritableDatabase().update(TABLE,cv,"id=? AND state=?",
             new String[]{id,RUNNING});
     }
-    /** Explicit user command: rebind previously queued files to a newly
-     * selected live Android Network. No silent proxy/VPN fallback. */
-    public synchronized int rebindQueued(long handle,String route,String ips) {
+    /**
+     * Resume/rebind every queued, paused and failed file in one atomic update.
+     * This deliberately bypasses the paged UI and preserves created/FIFO order.
+     */
+    public synchronized int resumeAll(long handle,String route,String ips) {
         if(handle<0||ips==null||ips.isEmpty())return 0;
         ContentValues values=new ContentValues();
+        values.put("state",QUEUED);
         values.put("network",handle);
         values.put("route",route==null?"所选网络":route);
         values.put("ips",ips);
+        values.put("detail","已排队（保留可用的 .aria2 断点）");
         values.put("updated",System.currentTimeMillis());
-        return getWritableDatabase().update(TABLE,values,"state=?",
-            new String[]{QUEUED});
+        return getWritableDatabase().update(TABLE,values,"state IN (?,?,?)",
+            new String[]{QUEUED,PAUSED,FAILED});
     }
 
     /** Move a queued job to the front; does not interrupt the current file. */

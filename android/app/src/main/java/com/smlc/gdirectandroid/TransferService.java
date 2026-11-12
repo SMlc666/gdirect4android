@@ -64,6 +64,7 @@ public final class TransferService extends Service {
     private volatile String activeId;
     private volatile String requestedStop; // pause / cancel, no auth data
     private volatile boolean timedOut;
+    private volatile boolean closing;
     private Runnable progressTick;
     private static volatile Snapshot current =
         new Snapshot("idle","","任务列表已就绪",0L,-1L,"",0L);
@@ -180,19 +181,8 @@ public final class TransferService extends Service {
                     if(COMMAND_RESUME.equals(command)){
                         shouldRun=jobs.resume(id,handle,route,ips);
                     }else{
-                        // "Continue all" is also an explicit decision to
-                        // rebind queued jobs after Android Network ID changed.
-                        shouldRun=jobs.rebindQueued(handle,route,ips)>0;
-                        JSONArray entries=jobs.list();
-                        for(int i=0;i<entries.length();i++){
-                            org.json.JSONObject item=entries.optJSONObject(i);
-                            if(item==null)continue;
-                            String state=item.optString("state");
-                            if(TransferQueue.PAUSED.equals(state) ||
-                               TransferQueue.FAILED.equals(state)){
-                                shouldRun|=jobs.resume(item.optString("id"),handle,route,ips);
-                            }
-                        }
+                        // All eligible jobs, including those beyond the UI page.
+                        shouldRun=jobs.resumeAll(handle,route,ips)>0;
                     }
                 }else if(COMMAND_PRIORITY.equals(command)){
                     jobs.prioritize(id);
@@ -220,7 +210,7 @@ public final class TransferService extends Service {
     }
 
     private void startQueue(){
-        if(working)return;
+        if(working||closing)return;
         working=true;
         timedOut=false;
         try {
@@ -280,7 +270,7 @@ public final class TransferService extends Service {
                 String token=credentials.getTokenBlocking();
                 long bytes=transfer(job,token);
                 String stop=requestedStop;
-                if(COMMAND_PAUSE.equals(stop) || timedOut) {
+                if(COMMAND_PAUSE.equals(stop) || (timedOut && !COMMAND_CANCEL.equals(stop))) {
                     jobs.change(job.id,TransferQueue.RUNNING,
                         TransferQueue.PAUSED,"下载已暂停，断点保留");
                     current=new Snapshot("paused",job.name,"已保留本地断点",
@@ -301,9 +291,9 @@ public final class TransferService extends Service {
                 }
             }catch(Exception|LinkageError error){
                 String stop=requestedStop;
-                String state=timedOut||COMMAND_PAUSE.equals(stop)?
-                    TransferQueue.PAUSED:COMMAND_CANCEL.equals(stop)?
-                    TransferQueue.CANCELLED:TransferQueue.FAILED;
+                String state=COMMAND_CANCEL.equals(stop)?TransferQueue.CANCELLED:
+                    (timedOut||COMMAND_PAUSE.equals(stop))?TransferQueue.PAUSED:
+                    TransferQueue.FAILED;
                 String reason=TransferQueue.PAUSED.equals(state)?
                     "已暂停；可重新选择网络继续":
                     TransferQueue.CANCELLED.equals(state)?"用户取消":
@@ -323,6 +313,7 @@ public final class TransferService extends Service {
             // worker is winding down. It will see the next explicit command.
             working=false;
             if(progressTick!=null)ui.removeCallbacks(progressTick);
+            if(closing)return; // Never restart a destroyed service.
             // A new user-enqueued job can arrive in the small gap after
             // the previous loop saw an empty queue. Never strand it.
             if(!timedOut && jobs.next()!=null){
@@ -468,7 +459,7 @@ public final class TransferService extends Service {
 
     @Override public void onTimeout(int startId,int fgsType) {
         timedOut=true;
-        requestedStop=COMMAND_PAUSE;
+        if(requestedStop==null)requestedStop=COMMAND_PAUSE;
         MainActivity.nativeCancelDownload();
         String id=activeId;
         if(id!=null)jobs.change(id,TransferQueue.RUNNING,TransferQueue.PAUSED,
@@ -477,15 +468,22 @@ public final class TransferService extends Service {
         stopSelf(startId);
     }
     @Override public void onDestroy(){
+        closing=true;
+        timedOut=true;
         if(activeId!=null) {
-            requestedStop=COMMAND_PAUSE;
+            // A previous cancel must not accidentally become a pause.
+            if(requestedStop==null)requestedStop=COMMAND_PAUSE;
             MainActivity.nativeCancelDownload();
         }
         if(progressTick!=null)ui.removeCallbacks(progressTick);
-        credentials.shutdown();
-        worker.shutdownNow();
-        reporter.shutdown();
-        jobs.close();
+        // libaria2 may still be unwinding. Cleanup waits for the native worker;
+        // SQLite closes only after already queued progress writes have drained.
+        worker.execute(()->{
+            credentials.shutdown();
+            reporter.execute(jobs::close);
+            reporter.shutdown();
+        });
+        worker.shutdown();
         super.onDestroy();
     }
     @Override public IBinder onBind(Intent intent){return null;}

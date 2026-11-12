@@ -16,8 +16,13 @@ SSL="$OUT/android-openssl"
 ARIA="$OUT/android-aria2"
 SRC="$OUT/vendor"
 mkdir -p "$SRC" "$SSL" "$ARIA"
-if [ -s "$SSL/lib/libssl.a" ] && [ -s "$ARIA/lib/libaria2.a" ] && [ -s "$ROOT/android/native/src/aria2_android_bridge.cc" ]; then
-  echo "Using cached Android libaria2 + OpenSSL archives"
+if [ -s "$SSL/lib/libssl.a" ] && [ -s "$ARIA/lib/libaria2.a" ]; then
+  # Native libraries may be cached while native/bridge.cc changes.
+  # ALWAYS regenerate the Android-specific C++ bridge from the latest
+  # source, otherwise an old binary silently loses pause/resume fixes.
+  python3 "$ROOT/android/native/patch_aria2_android.py" --bridge-only
+  test -s "$ROOT/android/native/src/aria2_android_bridge.cc"
+  echo "Using cached Android libaria2 + OpenSSL; regenerated bridge"
   exit 0
 fi
 VER=3.5.9

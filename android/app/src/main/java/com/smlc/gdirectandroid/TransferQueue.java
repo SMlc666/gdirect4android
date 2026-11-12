@@ -160,6 +160,19 @@ public final class TransferQueue extends SQLiteOpenHelper {
         getWritableDatabase().update(TABLE,cv,"id=? AND state=?",
             new String[]{id,RUNNING});
     }
+    /** Explicit user command: rebind previously queued files to a newly
+     * selected live Android Network. No silent proxy/VPN fallback. */
+    public synchronized int rebindQueued(long handle,String route,String ips) {
+        if(handle<0||ips==null||ips.isEmpty())return 0;
+        ContentValues values=new ContentValues();
+        values.put("network",handle);
+        values.put("route",route==null?"所选网络":route);
+        values.put("ips",ips);
+        values.put("updated",System.currentTimeMillis());
+        return getWritableDatabase().update(TABLE,values,"state=?",
+            new String[]{QUEUED});
+    }
+
     /** Move a queued job to the front; does not interrupt the current file. */
     public synchronized boolean prioritize(String id) {
         Job selected=get(id);

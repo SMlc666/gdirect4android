@@ -760,6 +760,9 @@ public final class MaterialShell {
                 progress.setProgressCompat(0,false);
             }
         }
+        // The active summary badge is global; avoid opening SQLite and
+        // rebuilding 100 file cards while viewing another destination.
+        if (currentPage!=1 && currentPage!=-1) return;
         JSONArray queued=TransferService.tasks(activity);
         // Avoid tearing down the entire list every time the active byte
         // counter changes. Live progress stays in the summary header above.
@@ -801,7 +804,7 @@ public final class MaterialShell {
                 "cancelled".equals(state)?"已取消":state;
             TextView stateText=text(stateLabel+" · "+job.optString("route",""),12,false);
             stateText.setTextColor("failed".equals(state)?
-                color(com.google.android.material.R.attr.colorError,primary):onSurfaceVariant);
+                color(android.R.attr.colorError,primary):onSurfaceVariant);
             inner.addView(stateText);
             TextView details=text(job.optString("detail",""),12,false);
             details.setTextColor(onSurfaceVariant);

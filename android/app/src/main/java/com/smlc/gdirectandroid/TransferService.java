@@ -55,6 +55,8 @@ public final class TransferService extends Service {
     private static final int NOTIFY_ID=9041;
     private static final Pattern COUNTS=Pattern.compile("(\\d+)/(\\d+)");
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
+    // SQLite writes must not interrupt Material 3 / 60Hz UI animations.
+    private final ExecutorService reporter=Executors.newSingleThreadExecutor();
     private final Handler ui=new Handler(Looper.getMainLooper());
     private TransferQueue jobs;
     private DesktopOAuth credentials;
@@ -178,6 +180,9 @@ public final class TransferService extends Service {
                     if(COMMAND_RESUME.equals(command)){
                         shouldRun=jobs.resume(id,handle,route,ips);
                     }else{
+                        // "Continue all" is also an explicit decision to
+                        // rebind queued jobs after Android Network ID changed.
+                        shouldRun=jobs.rebindQueued(handle,route,ips)>0;
                         JSONArray entries=jobs.list();
                         for(int i=0;i<entries.length();i++){
                             org.json.JSONObject item=entries.optJSONObject(i);
@@ -237,20 +242,18 @@ public final class TransferService extends Service {
                 String id=activeId;
                 if(id!=null){
                     if(requestedStop!=null)MainActivity.nativeCancelDownload();
-                    TransferQueue.Job job=jobs.get(id);
-                    if(job!=null&&TransferQueue.RUNNING.equals(job.state)){
-                        try {
-                            String raw=MainActivity.nativeDownloadProgress();
-                            Matcher match=COUNTS.matcher(raw);
-                            if(match.find()){
-                                long done=Long.parseLong(match.group(1));
-                                long total=Long.parseLong(match.group(2));
-                                jobs.progress(id,done,total,raw);
-                                current=new Snapshot("running",job.name,raw,done,total,id,
-                                    System.currentTimeMillis());
-                            }
-                        }catch(Exception|LinkageError ignored){}
-                    }
+                    try {
+                        String raw=MainActivity.nativeDownloadProgress();
+                        Matcher match=COUNTS.matcher(raw);
+                        if(match.find()){
+                            long done=Long.parseLong(match.group(1));
+                            long total=Long.parseLong(match.group(2));
+                            Snapshot before=current;
+                            current=new Snapshot("running",before.name,raw,done,total,id,
+                                System.currentTimeMillis());
+                            reporter.execute(()->jobs.progress(id,done,total,raw));
+                        }
+                    }catch(Exception|LinkageError ignored){}
                 }
                 notifyProgress(false);
                 ui.postDelayed(this,1500L);
@@ -481,6 +484,7 @@ public final class TransferService extends Service {
         if(progressTick!=null)ui.removeCallbacks(progressTick);
         credentials.shutdown();
         worker.shutdownNow();
+        reporter.shutdown();
         jobs.close();
         super.onDestroy();
     }

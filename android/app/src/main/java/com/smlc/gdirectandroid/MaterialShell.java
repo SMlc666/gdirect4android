@@ -130,7 +130,9 @@ public final class MaterialShell {
         activity.getWindow().setNavigationBarColor(surface);
         if (Build.VERSION.SDK_INT >= 26) {
             int flags = activity.getWindow().getDecorView().getSystemUiVisibility();
-            flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            int mask = View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR |
+                View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            flags = Color.luminance(surface) > 0.50 ? flags | mask : flags & ~mask;
             activity.getWindow().getDecorView().setSystemUiVisibility(flags);
         }
         open(activity.getIntent() == null ? "files" :
@@ -326,11 +328,14 @@ public final class MaterialShell {
         label(optimized,"优先使用","可以手动选择刚刚验证过的 Google 前端 IP。");
         move(optimized,slots.preferredIp);
         move(optimized,slots.endpointSummary);
+        if (slots.endpointSummary != null)
+            slots.endpointSummary.setTextColor(onSurfaceVariant);
 
         MaterialCardView report=card(page);
         LinearLayout output=cardContent(report);
         label(output,"线路状态","扫描结果与失败详情");
         move(output,slots.scanResult);
+        if (slots.scanResult != null) slots.scanResult.setTextColor(onSurface);
         return screen(page);
     }
 
@@ -421,7 +426,7 @@ public final class MaterialShell {
 
         MaterialCardView about=card(page);
         LinearLayout version=cardContent(about);
-        label(version,"关于 gdirect","v1.0.0 · Android ARM64");
+        label(version,"关于 gdirect","v1.0.0 Release Candidate · Android ARM64");
         footnote=text("使用原版 libaria2、Google Drive API 与 Google 官方 TLS 身份验证。"
             +" 浏览器 OAuth 和 Token 刷新使用系统默认网络；文件 API 与下载遵照所选 Android 网络。",13,false);
         footnote.setTextColor(onSurfaceVariant);

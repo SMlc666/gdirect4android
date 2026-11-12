@@ -726,8 +726,8 @@ public final class MainActivity extends AppCompatActivity {
         Button btn = new MaterialButton(this);
         btn.setText(title);
         btn.setAllCaps(false);
-        btn.setTextColor(Color.WHITE);
-        btn.setBackgroundTintList(ColorStateList.valueOf(BLUE));
+        // Let the Material 3 theme and wallpaper dynamic palette tint buttons.
+        // Static diagnostics-blue would make dark/dynamic themes inconsistent.
         root.addView(btn);
         return btn;
     }

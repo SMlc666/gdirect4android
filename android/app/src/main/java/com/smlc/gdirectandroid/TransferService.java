@@ -52,9 +52,9 @@ public final class TransferService extends Service {
         new Snapshot("idle", "", "还没有下载任务", 0L, -1L, "", 0L);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
-    private boolean active;
-    private boolean cancelled;
-    private boolean timedOut;
+    private volatile boolean active;
+    private volatile boolean cancelled;
+    private volatile boolean timedOut;
     private Runnable progressTick;
 
     public static final class Snapshot {
@@ -293,6 +293,10 @@ public final class TransferService extends Service {
         progressTick = new Runnable() {
             @Override public void run() {
                 if (!active) return;
+                // Native aria2 initializes cancellation at session start.
+                // Reassert user cancellation until that JNI call terminates,
+                // closing the race where a tap precedes its initialization.
+                if (cancelled) MainActivity.nativeCancelDownload();
                 Snapshot s = current;
                 if ("running".equals(s.status)) {
                     try {
@@ -359,7 +363,7 @@ public final class TransferService extends Service {
             stopForeground(STOP_FOREGROUND_REMOVE);
             // Post a normal, dismissible completion/failure notification.
             notifyProgress(true);
-            stopSelfResult(startId);
+            stopSelf();
         });
     }
 

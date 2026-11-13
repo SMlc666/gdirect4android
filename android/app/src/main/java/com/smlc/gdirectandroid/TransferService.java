@@ -90,9 +90,16 @@ public final class TransferService extends Service {
     }
     // Backwards-compatible history API used by the initial RC UI.
     public static JSONArray history(Context ctx){return tasks(ctx);}
-    public static void clearHistory(Context ctx) {
+    public static int clearHistory(Context ctx) {
         try(TransferQueue store=new TransferQueue(ctx.getApplicationContext())){
-            store.clearFinished();
+            return store.clearFinished();
+        }
+    }
+    /** Completed/cancelled records are deletable without starting an FGS.
+     * Their transferred content is already in the user's SAF destination. */
+    public static boolean removeFinishedRecord(Context ctx,String id) {
+        try(TransferQueue store=new TransferQueue(ctx.getApplicationContext())){
+            return store.removeFinishedRecord(id);
         }
     }
     public static Intent create(Context context,Uri destination,DrivePanel.DriveFile file,

@@ -229,6 +229,13 @@ public final class TransferQueue extends SQLiteOpenHelper {
         if(task==null || RUNNING.equals(task.state)) return false;
         return getWritableDatabase().delete(TABLE,"id=?",new String[]{id})==1;
     }
+    /** A record-delete action must never remove queued or live payloads. */
+    public synchronized boolean removeFinishedRecord(String id) {
+        if(id==null||id.isEmpty())return false;
+        return getWritableDatabase().delete(TABLE,
+            "id=? AND state IN (?,?)",
+            new String[]{id,COMPLETED,CANCELLED})==1;
+    }
     public synchronized int clearFinished() {
         return getWritableDatabase().delete(TABLE,"state IN (?,?)",
             new String[]{COMPLETED,CANCELLED});

@@ -804,6 +804,23 @@ public final class MainActivity extends AppCompatActivity {
     /** Called only by explicit download-card actions. Never silently switch
      * to a default VPN after an old physical Network handle disappeared. */
     public void queueCommand(String action,String id) {
+        if(TransferService.COMMAND_REMOVE.equals(action)) {
+            worker.execute(()->{
+                boolean removed=false;
+                String error=null;
+                try { removed=TransferService.removeFinishedRecord(getApplicationContext(),id); }
+                catch(Exception e){ error=e.getMessage(); }
+                final boolean success=removed;
+                final String reason=error;
+                runOnUiThread(()->{
+                    if(shell==null)return;
+                    shell.invalidateTransfers();
+                    shell.notice(success?"已删除本机任务记录（下载文件未删除）":
+                        "删除失败："+(reason==null?"任务状态已改变或记录不存在":reason));
+                });
+            });
+            return;
+        }
         Choice c=selected();
         boolean resume=TransferService.COMMAND_RESUME.equals(action)||
             TransferService.COMMAND_RESUME_ALL.equals(action);
@@ -822,6 +839,22 @@ public final class MainActivity extends AppCompatActivity {
         }catch(Exception error){
             if(shell!=null)shell.notice("任务操作失败："+error.getMessage());
         }
+    }
+    public void clearFinishedRecords() {
+        worker.execute(()->{
+            int count=-1;
+            String error=null;
+            try { count=TransferService.clearHistory(getApplicationContext()); }
+            catch(Exception e){ error=e.getMessage(); }
+            final int removed=count;
+            final String reason=error;
+            runOnUiThread(()->{
+                if(shell==null)return;
+                shell.invalidateTransfers();
+                shell.notice(removed>=0?"已清理 "+removed+" 项已结束的任务记录":
+                    "清理失败："+reason);
+            });
+        });
     }
     public void exportConfiguration(){
         Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);

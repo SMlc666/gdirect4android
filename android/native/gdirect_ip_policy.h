@@ -31,4 +31,12 @@ inline size_t choose_ip(const std::vector<IpLoad>& peers, uint64_t sequence) {
   }
   return selected;
 }
+// Only retire keepalive at an HTTP response boundary, after several
+// consecutive slow windows and a statistically useful byte sample.
+inline bool retire_after_segment(uint64_t bytes, double own_kib,
+                                 double fastest_kib, unsigned slow_windows) {
+  return bytes > 2u * 1024u * 1024u && fastest_kib > 512.0 &&
+         own_kib < 0.55 * fastest_kib && slow_windows >= 3;
+}
+
 }  // namespace gdirect

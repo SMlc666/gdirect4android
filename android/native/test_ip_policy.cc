@@ -17,5 +17,9 @@ int main() {
   assert(choose_ip(idle,6)==2);
   const std::vector<IpLoad> equal{{300,2},{300,2},{300,2}};
   assert(choose_ip(equal,6)==0);
+  assert(!gdirect::retire_after_segment(1024,100,1000,10));
+  assert(!gdirect::retire_after_segment(4*1024*1024,100,1000,2));
+  assert(!gdirect::retire_after_segment(4*1024*1024,450,600,4));
+  assert(gdirect::retire_after_segment(4*1024*1024,100,1000,3));
   return 0;
 }

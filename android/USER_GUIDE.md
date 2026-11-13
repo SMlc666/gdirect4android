@@ -176,3 +176,15 @@ approximate live per-IP KiB/s, open socket count and received KiB. This is a
 actively written by another connection. We deliberately do not attempt
 unsafe concurrent writes, manual Range overlap or forced cancellation of
 active pieces; completion still requires the original size/MD5 check.
+
+### exp2 safe connection-level work migration
+
+After three consecutive sampled windows with a materially slower endpoint,
+and only after receiving several MiB on that route, the native HTTP keepalive
+pool declines to reuse a finished connection (55% relative performance
+threshold). **The currently active HTTP Range is never interrupted.** aria2
+keeps the checkpoint, assigns unclaimed segments using its own piece manager,
+and opens a replacement TCP socket through the adaptive IP policy when needed.
+This provides bounded connection-level work migration and tail opportunities,
+not a risky preemptive in-flight segment takeover. Because carrier paths may
+share the same bottleneck, a speed improvement is not guaranteed.

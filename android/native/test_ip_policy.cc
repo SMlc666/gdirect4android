@@ -21,5 +21,28 @@ int main() {
   assert(!gdirect::retire_after_segment(4*1024*1024,100,1000,2));
   assert(!gdirect::retire_after_segment(4*1024*1024,450,600,4));
   assert(gdirect::retire_after_segment(4*1024*1024,100,1000,3));
+  // Regression: aria2 resolves googleapis.com to a numeric address BEFORE
+  // SocketCore::establishConnection. The resolved IP is only a hint; the
+  // selected verified Google frontend must be used for each new dial.
+  std::vector<std::string> pool{"142.251.102.113","142.251.122.100"};
+  std::vector<IpLoad> current{{0,0},{0,0}};
+  size_t choice=99, counts[2]={0,0};
+  for (uint64_t dial=0;dial<8;++dial) {
+    auto dest=gdirect::choose_dial_address(
+        pool[0],true,pool,current,dial,&choice);
+    assert(dest==pool[choice]);
+    ++counts[choice];
+    ++current[choice].open_sockets;
+  }
+  assert(counts[0]==4 && counts[1]==4);
+  assert(gdirect::choose_dial_address(
+      pool[0],false,pool,current,8)==pool[0]);
+  assert(gdirect::choose_dial_address(
+      pool[0],true,{pool[0]},{{0,0}},8)==pool[0]);
+  std::vector<std::string> lookup{pool[0]};
+  gdirect::order_pooled_addresses(lookup,pool,1);
+  assert(lookup.size()==2 && lookup[0]==pool[1] && lookup[1]==pool[0]);
+  gdirect::order_pooled_addresses(lookup,pool,2);
+  assert(lookup.size()==2 && lookup[0]==pool[0] && lookup[1]==pool[1]);
   return 0;
 }

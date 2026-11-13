@@ -96,3 +96,12 @@ weights sampled speed, RTT and benchmark confidence and optionally spreads
 selected frontends across /24s. Settings schema 2 remains compatible with
 earlier exported schema 1 backups. Progress is inline rather than a second
 debug button. A scan is required on a new/unvalidated network.
+
+### RC4-exp3.1: verified Google dial-time Multi-IP routing
+
+Fixes a real-device bug where the configured Multi-IP Turbo pool appeared
+in UI but 8/8 TCP connections still used the first IP. Aria2 resolves the
+hostname before socket establishment, so routing is now selected at the
+direct Google socket dial using the original request hostname, and keepalive
+lookup includes actual peers across the verified pool. Per-IP diagnostics
+include routing selection counts. VersionCode 22 / rc4-exp3.1.

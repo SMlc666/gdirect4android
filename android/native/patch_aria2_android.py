@@ -48,12 +48,14 @@ struct GdirectRouteSample {
   double smooth_kib = 0.0;
   unsigned open_sockets = 0;
   unsigned created_sockets = 0;
+  unsigned selected_dials = 0;
   unsigned slow_windows = 0;
 };
 static std::vector<GdirectRouteSample> gdirect_ip_samples;
 static std::unordered_map<int, size_t> gdirect_socket_owner;
 static std::mutex gdirect_ip_mutex;
 static uint64_t gdirect_ip_cursor = 0;
+static uint64_t gdirect_reuse_cursor = 0;
 static std::chrono::steady_clock::time_point gdirect_sample_clock =
   std::chrono::steady_clock::now();
 
@@ -90,6 +92,7 @@ extern "C" void gdirect_android_set_ip_pool(const char* csv) {
   gdirect_ip_samples.clear();
   gdirect_socket_owner.clear();
   gdirect_ip_cursor = 0;
+  gdirect_reuse_cursor = 0;
   gdirect_sample_clock = std::chrono::steady_clock::now();
   if (!csv || !*csv) return;
   const std::string source(csv);
@@ -112,18 +115,39 @@ extern "C" void gdirect_android_set_ip_pool(const char* csv) {
   }
 }
 
-// Called from aria2's synchronous getaddrinfo path for each new connection.
-// Reuse of an existing keepalive connection never invokes this chooser.
-static const char* gdirect_android_next_ip() {
+// IMPORTANT: aria2 first resolves a Google hostname, then passes the
+// NUMERIC 'addr' to SocketCore::establishConnection(). Choosing an IP in
+// callGetaddrinfo() based on gdirect_host(host) did not intercept these dials:
+// all 8 connections could hit the canonical IP. Choose at the actual
+// HttpInitiateConnectionCommand dial boundary where the original Request
+// hostname is still known, and NEVER rewrite unrelated hosts or proxies.
+std::string gdirect_android_select_dial_ip(
+    const std::string& request_host, const std::string& resolved) {
+  if (!gdirect_host(request_host)) return resolved;
   std::lock_guard<std::mutex> guard(gdirect_ip_mutex);
-  if (gdirect_frontend_pool.empty()) return gdirect_ip;
+  if (gdirect_frontend_pool.size() < 2) return resolved;
   gdirect_update_rate_locked();
   std::vector<gdirect::IpLoad> loads;
-  for (const auto& item : gdirect_ip_samples) {
-    loads.push_back({item.smooth_kib, item.open_sockets});
-  }
-  const size_t index = gdirect::choose_ip(loads, gdirect_ip_cursor++);
-  return gdirect_frontend_pool[index].c_str();
+  for (const auto& item : gdirect_ip_samples)
+    loads.push_back({item.smooth_kib,item.open_sockets});
+  size_t index=0;
+  const std::string address=gdirect::choose_dial_address(
+      resolved,true,gdirect_frontend_pool,loads,gdirect_ip_cursor++,&index);
+  ++gdirect_ip_samples[index].selected_dials;
+  return address;
+}
+
+// Keepalive sockets are keyed by the ACTUAL remote IP in DownloadEngine.
+// The normal resolver only returns the canonical pinned IP, so without
+// expanding this lookup, secondary IP sockets are never reused. Rotate the
+// lookup independently of new dials (separate cursor), retaining aria2's
+// original socket lifecycle, segment ownership and TLS validation.
+void gdirect_android_order_pooled_addresses(
+    const std::string& request_host, std::vector<std::string>& addresses) {
+  if (!gdirect_host(request_host)) return;
+  std::lock_guard<std::mutex> guard(gdirect_ip_mutex);
+  gdirect::order_pooled_addresses(
+      addresses,gdirect_frontend_pool,gdirect_reuse_cursor++);
 }
 
 // At connect(), record the numeric peer IP. This does not perform DNS;
@@ -190,10 +214,12 @@ extern "C" size_t gdirect_android_ip_stats(char* out, size_t capacity) {
   for (size_t i=0; i<gdirect_ip_samples.size(); ++i) {
     const auto& item = gdirect_ip_samples[i];
     char part[128];
-    std::snprintf(part, sizeof(part), "%s%s %.0f KiB/s (%u连接, %llu KiB)",
+    std::snprintf(part, sizeof(part),
+                  "%s%s %.0f KiB/s (%u连接, %llu KiB, %u次选路)",
                   i ? " | " : "", item.ip.c_str(), item.smooth_kib,
                   item.open_sockets,
-                  static_cast<unsigned long long>(item.bytes / 1024));
+                  static_cast<unsigned long long>(item.bytes / 1024),
+                  item.selected_dials);
     report += part;
   }
   const size_t count = std::min(capacity-1,report.size());
@@ -219,10 +245,10 @@ extern "C" size_t gdirect_android_ip_stats(char* out, size_t capacity) {
   }
 #endif
 ''' + anchor, 1)
-    # Keep the HTTPS Host/SNI unchanged, altering only the numeric connect IP.
-    anchor = "    host = gdirect_ip;"
-    assert s.count(anchor) == 1
-    s = s.replace(anchor, "    host = gdirect_android_next_ip();", 1)
+    # Preserve gdirect's canonical DNS result. Actual multi-IP choices MUST
+    # occur in HttpInitiateConnectionCommand after aria2 resolves the
+    # hostname, not here: getaddrinfo for the final TCP dial sees a numeric IP.
+    assert s.count("    host = gdirect_ip;") == 1
     # Attribute connected sockets and TLS application bytes to the selected
     # Google frontend; never alter aria2's existing piece ownership.
     anchor = "    // TODO at this point, connection may not be established"
@@ -240,6 +266,52 @@ extern "C" size_t gdirect_android_ip_stats(char* out, size_t capacity) {
     s = s.replace(anchor,
         "    gdirect_android_release_socket(sockfd_);\n" + anchor, 1)
     src.write_text(s)
+
+    # Aria2's resolver passes a numeric address into establishConnection(),
+    # so the route choice must happen HERE with the original Google hostname.
+    # Additionally pooled sockets are keyed by their real remote IP, requiring
+    # every verified peer to participate in the keepalive lookup.
+    path=Path("src/HttpInitiateConnectionCommand.cc")
+    body=path.read_text()
+    marker='#include "HttpInitiateConnectionCommand.h"'
+    assert body.count(marker)==1
+    body=body.replace(marker,marker+'''
+#if defined(__ANDROID__)
+extern std::string gdirect_android_select_dial_ip(
+    const std::string& host,const std::string& resolved);
+extern void gdirect_android_order_pooled_addresses(
+    const std::string& host,std::vector<std::string>& addresses);
+#endif
+''',1)
+    marker='''    std::shared_ptr<SocketCore> pooledSocket =
+        getDownloadEngine()->popPooledSocket(resolvedAddresses,
+                                             getRequest()->getPort());'''
+    assert body.count(marker)==1
+    body=body.replace(marker,'''    std::vector<std::string> reuseCandidates(resolvedAddresses);
+#if defined(__ANDROID__)
+    gdirect_android_order_pooled_addresses(getRequest()->getHost(),
+                                           reuseCandidates);
+#endif
+    std::shared_ptr<SocketCore> pooledSocket =
+        getDownloadEngine()->popPooledSocket(reuseCandidates,
+                                             getRequest()->getPort());''',1)
+    marker='''      getSocket()->establishConnection(addr, port);
+
+      getRequest()->setConnectedAddrInfo(hostname, addr, port);
+      auto c = make_unique<ConnectCommand>(getCuid(), getRequest(),
+                                           proxyRequest, // must be null'''
+    assert body.count(marker)==1
+    body=body.replace(marker,'''      std::string dialAddress=addr;
+#if defined(__ANDROID__)
+      dialAddress=gdirect_android_select_dial_ip(getRequest()->getHost(),
+                                                  addr);
+#endif
+      getSocket()->establishConnection(dialAddress, port);
+
+      getRequest()->setConnectedAddrInfo(hostname, dialAddress, port);
+      auto c = make_unique<ConnectCommand>(getCuid(), getRequest(),
+                                           proxyRequest, // must be null''',1)
+    path.write_text(body)
 
     # Avoid keeping a chronically slow socket for another HTTP segment.
     # The library retains ownership of both the current Range and the

@@ -173,6 +173,19 @@ public final class MaterialShell {
             shell.setScaleY(0.987f);
         }
         activity.setContentView(shell);
+        // Android 15 enforces edge-to-edge at targetSdk 35. Without a
+        // status-bar inset, the clock/notification icons overlap "gdirect".
+        // Older versions already fit system windows by default.
+        if (Build.VERSION.SDK_INT >= 35) {
+            androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(shell,
+                (view,insets)->{
+                    int top=insets.getInsets(
+                        androidx.core.view.WindowInsetsCompat.Type.statusBars()).top;
+                    view.setPadding(0,top,0,0);
+                    return insets;
+                });
+            androidx.core.view.ViewCompat.requestApplyInsets(shell);
+        }
         if (enteringNewTheme) {
             shell.post(() -> shell.animate()
                 .alpha(1f).scaleX(1f).scaleY(1f).setDuration(380L)

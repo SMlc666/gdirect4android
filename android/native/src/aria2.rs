@@ -28,6 +28,27 @@ unsafe extern "C" {
     ) -> i32;
 }
 
+#[cfg(target_os = "android")]
+unsafe extern "C" {
+    fn gdirect_android_ip_stats(out: *mut c_char, capacity: usize) -> usize;
+}
+
+/// Last sampled per-IP TLS application data / open socket count. Neither
+/// Google OAuth tokens nor filenames are carried across this diagnostic.
+fn route_status() -> String {
+    #[cfg(target_os = "android")]
+    {
+        let mut buffer = [0 as c_char; 1024];
+        let length = unsafe {
+            gdirect_android_ip_stats(buffer.as_mut_ptr(), buffer.len())
+        }.min(buffer.len().saturating_sub(1));
+        let bytes: Vec<u8> = buffer[..length].iter().map(|b| *b as u8).collect();
+        return String::from_utf8_lossy(&bytes).into_owned();
+    }
+    #[cfg(not(target_os = "android"))]
+    String::new()
+}
+
 extern "C" fn progress(
     done: i64, total: i64, speed: i32, conns: i32, _data: *mut c_void,
 ) -> i32 {
@@ -168,13 +189,19 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeDownloadD
 pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeDownloadProgress(
     mut env: JNIEnv<'_>, _class: JClass<'_>,
 ) -> jstring {
-    crate::to_java(&mut env, &format!(
+    let mut report = format!(
         "下载：{}/{} 字节 · {} KiB/s · {} 连接",
         DONE.load(Ordering::Relaxed),
         TOTAL.load(Ordering::Relaxed),
         SPEED.load(Ordering::Relaxed) / 1024,
         CONNECTIONS.load(Ordering::Relaxed),
-    ))
+    );
+    let routes = route_status();
+    if !routes.is_empty() {
+        report.push_str("\n各 IP：");
+        report.push_str(&routes);
+    }
+    crate::to_java(&mut env, &report)
 }
 
 #[unsafe(no_mangle)]

@@ -76,3 +76,12 @@ Workspace export need further validation before a final general release.
 - No guarantee of resume across a changed remote file or server rejecting
   Range requests; integrity checks still validate Drive size and MD5 where
   provided. Google Workspace file export remains future work.
+
+### exp2: Transfer UI consistency and adaptive IP telemetry
+
+The experimental branch now renders a **single** SQLite task list, refreshes
+bytes and progress in place, and deletes completed/cancelled records directly
+with explicit feedback. Turbo keeps aria2's existing piece allocator and
+HTTP connection reuse, tracks per-IP TLS download bytes, and uses a cautious
+speed/load-based heuristic for *new* connections after warm-up. No custom
+overlapping Range writes, preemptive chunk theft, or multi-file concurrency.

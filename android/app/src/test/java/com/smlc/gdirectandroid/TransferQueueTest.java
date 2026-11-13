@@ -47,6 +47,15 @@ public final class TransferQueueTest {
         }
     }
 
+    @Test public void queuedModePersistsIndependentlyOfCurrentSetting() {
+        TransferQueue.Job j=queue.add("remote", "file", "",
+            "content://test/file","wifi","142.250.0.1",1,1024,8,true);
+        assertTrue(queue.get(j.id).multiIp);
+        assertTrue(queue.list().optJSONObject(0).optBoolean("multi_ip"));
+        assertEquals(1,queue.resumeAll(7,"cellular","142.250.1.1"));
+        assertTrue(queue.get(j.id).multiIp);
+    }
+
     @Test public void resumeAllDoesNotTouchRunningOrCompleted() {
         TransferQueue.Job running=queue.add("remoteA","A","","content://test/a",
             "wifi","142.250.0.1",1,1024,8);

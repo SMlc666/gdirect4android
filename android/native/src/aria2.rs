@@ -24,7 +24,7 @@ unsafe extern "C" {
         ca: *const c_char, connections: i32,
         callback: Option<extern "C" fn(i64, i64, i32, i32, *mut c_void) -> i32>,
         data: *mut c_void, signals: bool, ifindex: u32,
-        network_handle: u64,
+        network_handle: u64, ip_pool: *const c_char,
     ) -> i32;
 }
 
@@ -48,7 +48,21 @@ fn valid_name(name: &str) -> bool {
     name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
-fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64, route_ips: &str, connections: i32) -> String {
+/// Distribute a single aria2 session's connections on the first attempt.
+fn make_attempts(ips: &[String], connections: i32, multi_ip: bool)
+    -> Vec<(String, String)>
+{
+    let mut result = Vec::new();
+    let count = ips.len().min(4).min(connections.clamp(1, 16) as usize);
+    if multi_ip && count >= 2 {
+        result.push((ips[0].clone(), ips[..count].join(",")));
+    }
+    result.extend(ips.iter().map(|ip| (ip.clone(), String::new())));
+    result
+}
+
+fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str,
+       network: u64, route_ips: &str, connections: i32, multi_ip: bool) -> String {
     if !valid_id(id) || !valid_name(name) {
         return "ERR\n文件 ID 或临时文件名非法".into();
     }
@@ -82,7 +96,7 @@ fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64, rou
         if ips.len() >= 8 { break; }
     }
     if ips.is_empty() { return "ERR\n没有可用的优选 Google IP".into(); }
-    for ip in &ips {
+    for (ip, ip_pool) in make_attempts(&ips, connections, multi_ip) {
         if CANCEL.load(Ordering::Relaxed) {
             return "ERR\n用户取消 libaria2 下载".into();
         }
@@ -95,9 +109,9 @@ fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64, rou
         let arguments = (
             CString::new(url.as_str()), CString::new(path.to_string_lossy().as_bytes()),
             CString::new(name), CString::new(ip.as_str()),
-            CString::new(token), CString::new(ca),
+            CString::new(token), CString::new(ca), CString::new(ip_pool.as_str()),
         );
-        let (Ok(url), Ok(dir), Ok(name), Ok(ip), Ok(token), Ok(ca)) = arguments else {
+        let (Ok(url), Ok(dir), Ok(name), Ok(ip), Ok(token), Ok(ca), Ok(pool)) = arguments else {
             return "ERR\n路径或 OAuth 令牌含无效字节".into();
         };
         #[cfg(target_os = "android")]
@@ -105,17 +119,19 @@ fn run(id: &str, token: &str, ca: &str, dir: &str, name: &str, network: u64, rou
             gdirect_download_ex(
                 url.as_ptr(), dir.as_ptr(), name.as_ptr(), ip.as_ptr(),
                 std::ptr::null(), token.as_ptr(), ca.as_ptr(), connections.clamp(1, 16),
-                Some(progress), std::ptr::null_mut(), false, 0, network,
+                Some(progress), std::ptr::null_mut(), false, 0, network, pool.as_ptr(),
             )
         };
         #[cfg(not(target_os = "android"))]
-        let result = -100;
+        let result = { let _ = &pool; -100 };
         if result == 0 {
             let len = fs::metadata(&output).map(|m| m.len()).unwrap_or_default();
             if len > 0 {
                 return format!(
-                    "OK\n原版 libaria2 1.37.0 下载成功\n实际 IP：{}\n实际文件：{len} 字节\n设定：{} 条 HTTP 分段连接",
-                    ip.to_string_lossy(), connections.clamp(1,16)
+                    "OK\n原版 libaria2 1.37.0 下载成功\n前端路由：{}\n实际文件：{len} 字节\n设定：{} 条 HTTP 分段连接",
+                    if ip_pool.is_empty() { ip.to_string_lossy().to_string() }
+                    else { format!("Multi-IP ({})", ip_pool) },
+                    connections.clamp(1,16)
                 );
             }
         }
@@ -133,6 +149,7 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeDownloadD
     mut env: JNIEnv<'_>, _class: JClass<'_>,
     id: JString<'_>, token: JString<'_>, ca: JString<'_>,
     dir: JString<'_>, name: JString<'_>, network: jlong, ips: JString<'_>, connections: jni::sys::jint,
+    multi_ip: jni::sys::jboolean,
 ) -> jstring {
     let args = (|| Ok::<_, String>((
         arg(&mut env, id)?, arg(&mut env, token)?,
@@ -141,7 +158,7 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeDownloadD
     )))();
     let report = match args {
         Ok((id, token, ca, dir, name, ips)) =>
-            run(&id, &token, &ca, &dir, &name, network as u64, &ips, connections),
+            run(&id, &token, &ca, &dir, &name, network as u64, &ips, connections, multi_ip != 0),
         Err(e) => format!("ERR\nJNI 参数读取失败：{e}"),
     };
     crate::to_java(&mut env, &report)
@@ -170,6 +187,18 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeCancelDow
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn multi_ip_uses_one_session_and_keeps_single_ip_fallbacks() {
+        let ips = vec!["142.250.0.1".into(), "142.250.0.2".into(),
+            "142.250.0.3".into(), "142.250.0.4".into()];
+        let modes = make_attempts(&ips, 3, true);
+        assert_eq!(modes[0], (ips[0].clone(), ips[0..3].join(",")));
+        assert_eq!(modes.len(), ips.len()+1);
+        assert!(modes[1..].iter().all(|(_, pool)| pool.is_empty()));
+        assert_eq!(make_attempts(&ips, 1, true).len(), ips.len());
+        assert_eq!(make_attempts(&ips, 16, false).len(), ips.len());
+    }
+
     #[test]
     fn rejects_path_traversal_and_invalid_id() {
         assert!(valid_id("abc_123-"));

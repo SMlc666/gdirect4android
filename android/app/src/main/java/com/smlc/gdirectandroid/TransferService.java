@@ -96,7 +96,7 @@ public final class TransferService extends Service {
         }
     }
     public static Intent create(Context context,Uri destination,DrivePanel.DriveFile file,
-                                long handle,String route,String ips,int connections) {
+                                long handle,String route,String ips,int connections,boolean multiIp) {
         Intent i=new Intent(context,TransferService.class).setAction(ACTION_START);
         i.putExtra("destination",destination.toString());
         i.putExtra("file_id",file.id);
@@ -107,6 +107,7 @@ public final class TransferService extends Service {
         i.putExtra("route",route);
         i.putExtra("ips",ips);
         i.putExtra("connections",connections);
+        i.putExtra("multi_ip",multiIp);
         // The task ID is generated and committed inside TransferQueue.add.
         // Crucially: no OAuth token is ever carried in a replayable Intent.
         return i;
@@ -151,7 +152,8 @@ public final class TransferService extends Service {
                     throw new IllegalArgumentException("仅支持 Android SAF 保存位置");
                 TransferQueue.Job queued=jobs.add(id,name,intent.getStringExtra("md5"),
                     uri.toString(),intent.getStringExtra("route"),ips,handle,
-                    intent.getLongExtra("size",-1),intent.getIntExtra("connections",8));
+                    intent.getLongExtra("size",-1),intent.getIntExtra("connections",8),
+                    intent.getBooleanExtra("multi_ip",false));
                 current=new Snapshot("queued",queued.name,"已加入下载队列",
                     0,queued.size,queued.id,System.currentTimeMillis());
                 shouldRun=true;
@@ -354,7 +356,7 @@ public final class TransferService extends Service {
         if(!completeLocally){
             String report=MainActivity.nativeDownloadDrive(job.fileId,token,
                 ca.getAbsolutePath(),folder.getAbsolutePath(),result.getName(),
-                job.network,job.ips,job.connections);
+                job.network,job.ips,job.connections,job.multiIp);
             if(!report.startsWith("OK\n"))
                 throw new Exception("aria2 下载未完成：" + safe(report));
         }

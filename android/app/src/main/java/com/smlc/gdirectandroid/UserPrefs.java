@@ -61,6 +61,10 @@ public final class UserPrefs {
     public void networkHandle(long handle) { prefs.edit().putLong("network_handle", handle).apply(); }
     public int rankMode() { return range("rank_mode", 0, 0, 1); }
     public void rankMode(int value) { prefs.edit().putInt("rank_mode", Math.max(0, Math.min(1, value))).apply(); }
+    public boolean multiIp() { return prefs.getBoolean("multi_ip", false); }
+    public void multiIp(boolean enabled) {
+        prefs.edit().putBoolean("multi_ip",enabled).apply();
+    }
     public boolean haptics() { return prefs.getBoolean("haptics", true); }
     public void haptics(boolean value) { prefs.edit().putBoolean("haptics", value).apply(); }
 
@@ -68,7 +72,7 @@ public final class UserPrefs {
     boolean commitImportedSettings(String theme,boolean dynamic,boolean motion,
                                    boolean haptic,int scan,int threads,
                                    int connections,int ttl,int fallback,
-                                   int rank,boolean downloadPage) {
+                                   int rank,boolean downloadPage,boolean multiIp) {
         return prefs.edit()
             .putString("theme",theme)
             .putBoolean("dynamic_color",dynamic)
@@ -81,6 +85,7 @@ public final class UserPrefs {
             .putInt("fallback_count",fallback)
             .putInt("rank_mode",rank)
             .putBoolean("download_page",downloadPage)
+            .putBoolean("multi_ip",multiIp)
             .commit();
     }
 }

@@ -56,6 +56,19 @@ public final class TransferQueueTest {
         assertTrue(queue.get(j.id).multiIp);
     }
 
+    @Test public void completedJobPersistsFinalByteCountsAtomically() {
+        TransferQueue.Job j=queue.add("drive","archive","","content://test/file",
+            "wifi","142.250.0.1",1,2792249770L,8,true);
+        assertFalse(queue.complete(j.id,2792249770L));
+        assertTrue(queue.move(j.id,TransferQueue.QUEUED,TransferQueue.RUNNING));
+        assertTrue(queue.complete(j.id,2792249770L));
+        TransferQueue.Job saved=queue.get(j.id);
+        assertEquals(TransferQueue.COMPLETED,saved.state);
+        assertEquals(2792249770L,saved.done);
+        assertEquals(2792249770L,saved.total);
+        assertFalse(queue.complete(j.id,2792249770L));
+    }
+
     @Test public void terminalRecordRemovalIsImmediateAndSafe() {
         TransferQueue.Job running=queue.add("active","A","",
             "content://test/a","wifi","142.250.0.1",1,1024,8);

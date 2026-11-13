@@ -291,8 +291,7 @@ public final class TransferService extends Service {
                     current=new Snapshot("cancelled",job.name,"任务已取消",
                         0,job.size,job.id,System.currentTimeMillis());
                 }else{
-                    jobs.change(job.id,TransferQueue.RUNNING,
-                        TransferQueue.COMPLETED,"下载完成 · "+displaySize(bytes));
+                    jobs.complete(job.id,bytes);
                     current=new Snapshot("completed",job.name,
                         "已完整保存 · "+displaySize(bytes),bytes,bytes,job.id,
                         System.currentTimeMillis());

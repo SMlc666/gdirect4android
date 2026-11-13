@@ -73,7 +73,7 @@ fixed-signing keystore injected via GitHub Secrets. CI refuses to distribute
 an APK unless its SHA-256 signing certificate matches the pinned repository
 fingerprint. Never commit or share private signing keys.
 
-**Version status**: v1.0.0-rc4-exp3 is a testable release candidate, not yet a
+**Version status**: v1.0.0-rc4-exp3.1 is a testable release candidate, not yet a
 production-stability claim. Real-device validation of Material 3 theme, SAF,
 foreground service, background cancellation, route changes and OAuth remains
 required before a final 1.0 label.
@@ -221,3 +221,31 @@ mix fastest-TLS candidates with distinct /24 prefixes to avoid only sampling
 one edge subnet. None of these scoring heuristics guarantees improvement over
 a shared backbone bottleneck, and all target addresses are independently
 checked against Google's IPv4 allowlist in Rust.
+
+### RC4-exp3.1: actual socket-dial Multi-IP fix
+
+Real-device issue: 8 active HTTP connections were reported for the first
+verified Google frontend and 0 for a second configured peer. The original
+Android SocketCore hook rotated IP addresses during name resolution, but
+aria2's InitiateConnectionCommand resolves the hostname first and passes
+a **numeric IP** to SocketCore::establishConnection. The numeric address
+bypassed that hostname-only check, so Multi-IP enabled on the UI did not
+guarantee multiple frontends were actually used.
+
+The fix selects the frontend at the **actual direct Google HTTPS socket
+dial**, with the original verified Google Request hostname still available.
+Proxy connections and non-Google hosts are untouched. HTTP SNI and Host
+remain unchanged; the same Android Network pin, Google IPv4 allowlist, TLS
+certificate checks, HTTP Range journal and aria2 piece allocator apply.
+Pooled keepalive sockets are looked up by their actual remote IP across the
+whole verified pool, not just the canonical resolved address; a separate
+cursor avoids accidentally biasing fresh dials. The diagnostic line now
+shows per-IP actual read throughput, active sockets and cumulative routing
+selections. This gives users a way to distinguish a configured secondary
+IP from one actually selected for connections.
+
+The host C++ policy test reproduces 8 fresh dials with a numeric resolved
+Google IP and verifies balanced initial allocation across two peers. CI
+build/link/sign validation is **not** a substitute for live network testing:
+a remote frontend can still refuse connections, which must be observable.
+Never interpret multiple configured IPs alone as proof of Multi-IP routing.

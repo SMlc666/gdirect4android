@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <string>
+#include <algorithm>
 
 namespace gdirect {
 struct IpLoad {
@@ -31,6 +33,41 @@ inline size_t choose_ip(const std::vector<IpLoad>& peers, uint64_t sequence) {
   }
   return selected;
 }
+// Decide the actual numeric TCP dial destination AFTER hostname resolution.
+// This is intentionally keyed on the original, allowlisted Google Request
+// host. A numeric 'resolved' string is NOT itself evidence of authorization.
+// Unlike the old getaddrinfo hook, this is invoked once for every fresh
+// direct socket, not during an earlier DNS lookup.
+inline std::string choose_dial_address(
+    const std::string& resolved, bool authorized_google_request,
+    const std::vector<std::string>& verified_ips,
+    const std::vector<IpLoad>& load, uint64_t sequence, size_t* picked = nullptr) {
+  if (!authorized_google_request || verified_ips.size()<2 ||
+      verified_ips.size()!=load.size()) return resolved;
+  const size_t idx=choose_ip(load,sequence);
+  if (picked) *picked=idx;
+  return verified_ips[idx];
+}
+
+// HTTP keepalive sockets are pooled under the ACTUAL peer IP. Enumerate the
+// full verified pool when looking for reusable sockets, rotate the probe
+// order independently of the new-dial cursor, and preserve the normal
+// resolver candidates at the back (same request host, same TLS identity).
+inline void order_pooled_addresses(
+    std::vector<std::string>& addresses,
+    const std::vector<std::string>& verified_ips, uint64_t sequence) {
+  if (verified_ips.size()<2) return;
+  std::vector<std::string> ordered;
+  ordered.reserve(verified_ips.size()+addresses.size());
+  const size_t start=sequence%verified_ips.size();
+  for (size_t i=0;i<verified_ips.size();++i)
+    ordered.push_back(verified_ips[(start+i)%verified_ips.size()]);
+  for (const auto& address:addresses)
+    if (std::find(ordered.begin(),ordered.end(),address)==ordered.end())
+      ordered.push_back(address);
+  addresses.swap(ordered);
+}
+
 // Only retire keepalive at an HTTP response boundary, after several
 // consecutive slow windows and a statistically useful byte sample.
 inline bool retire_after_segment(uint64_t bytes, double own_kib,

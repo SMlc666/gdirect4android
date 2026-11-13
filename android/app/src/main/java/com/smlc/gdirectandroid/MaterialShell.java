@@ -562,7 +562,7 @@ public final class MaterialShell {
 
         MaterialCardView about=card(page);
         LinearLayout version=cardContent(about);
-        label(version,"关于 gdirect","v1.0.0 RC3 · Android ARM64");
+        label(version,"关于 gdirect","v1.0.0 RC4-exp1 · Android ARM64");
         footnote=text("使用原版 libaria2、Google Drive API 与 Google 官方 TLS 身份验证。"
             +" 浏览器 OAuth 和 Token 刷新使用系统默认网络；文件 API 与下载遵照所选 Android 网络。",13,false);
         footnote.setTextColor(onSurfaceVariant);

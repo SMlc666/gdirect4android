@@ -73,7 +73,7 @@ fixed-signing keystore injected via GitHub Secrets. CI refuses to distribute
 an APK unless its SHA-256 signing certificate matches the pinned repository
 fingerprint. Never commit or share private signing keys.
 
-**Version status**: v1.0.0-rc3 is a testable release candidate, not yet a
+**Version status**: v1.0.0-rc4-exp1 is a testable release candidate, not yet a
 production-stability claim. Real-device validation of Material 3 theme, SAF,
 foreground service, background cancellation, route changes and OAuth remains
 required before a final 1.0 label.

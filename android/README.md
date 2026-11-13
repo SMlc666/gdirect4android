@@ -35,7 +35,7 @@ Official CI builds are permanently signed using the original user-owned key.
 Never push signing keys. If Actions Secrets are unavailable, unsigned-for-
 distribution debug validation builds are not published as user updates.
 
-**Status: 1.0.0-rc3.** Download-task resilience, live device tests and
+**Status: 1.0.0-rc4-exp1 (experimental branch).** Download-task resilience, live device tests and
 Workspace export need further validation before a final general release.
 
 ## RC2 interaction refinements

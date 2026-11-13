@@ -158,7 +158,7 @@ pub fn scan(handle: u64) -> String {
     let seed=std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|time|time.as_nanos() as u64).unwrap_or(12345);
-    let sample=crate::selector::candidates(16,seed ^ handle,&[]);
+    let sample=crate::selector::candidates(16,seed ^ handle,&[],&[]);
     let cursor = AtomicUsize::new(0);
     let records: Mutex<Vec<(bool, String)>> =
         Mutex::new(vec![(false, String::new()); sample.len()]);

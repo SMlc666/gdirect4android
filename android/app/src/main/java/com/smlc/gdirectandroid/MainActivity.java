@@ -70,7 +70,7 @@ public final class MainActivity extends AppCompatActivity {
     private static native String nativeScanGoogle(long networkHandle);
     private static native String nativeOptimizeGoogle(
         long networkHandle, int maxCandidates, int workers, int speedMode,
-        int benchmarkCount, String recentlyVerifiedIps);
+        int benchmarkCount, String recentlyVerifiedIps, String selectedNetworkDnsIps);
     static native String nativeGoogleScanProgress();
     private static native void nativeCancelGoogleScan();
     static native String nativeDriveApiRequest(
@@ -347,9 +347,10 @@ public final class MainActivity extends AppCompatActivity {
             final String freshSeeds=String.join(",",
                 endpointPool.verifiedSeedIps(choice.handle));
             probe(()->{
+                String dns=discoverCurrentNetworkGoogleIps(choice);
                 String raw=nativeOptimizeGoogle(choice.handle,
                     candidates[position],workers[position],
-                    ranking==1?1:0,benchmarks[position],freshSeeds);
+                    ranking==1?1:0,benchmarks[position],freshSeeds,dns);
                 JSONObject data=new JSONObject(raw);
                 if(data.has("error"))
                     return "Google IP 扫描失败："+data.optString("error");
@@ -536,6 +537,28 @@ public final class MainActivity extends AppCompatActivity {
             }
         });
         updateEndpointChoices();
+    }
+
+    /**
+     * DNS is a source of UNVERIFIED scan candidates, never a replacement for
+     * the selected Network's TLS/Drive validation and Google allowlist.
+     * Resolve only on the scan worker so the Android UI never blocks on DNS.
+     */
+    private String discoverCurrentNetworkGoogleIps(Choice choice) {
+        try {
+            InetAddress[] resolved=choice.network==null?
+                InetAddress.getAllByName("www.googleapis.com"):
+                choice.network.getAllByName("www.googleapis.com");
+            java.util.LinkedHashSet<String> distinct=new java.util.LinkedHashSet<>();
+            for(InetAddress address:resolved) {
+                if(address instanceof Inet4Address)
+                    distinct.add(address.getHostAddress());
+                if(distinct.size()==8)break;
+            }
+            return String.join(",",distinct);
+        }catch(Exception ignored) {
+            return ""; // Continue a bounded scan without DNS seeding.
+        }
     }
 
     private boolean speedPreferred() {

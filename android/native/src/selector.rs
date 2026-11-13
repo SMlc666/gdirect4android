@@ -78,7 +78,9 @@ fn shuffle<T>(values: &mut [T], mut seed: u64) {
 /// Generates evenly distributed /24 candidates inside the original gdirect
 /// Google's GENERAL frontend blocks, never arbitrary Internet addresses.
 /// Always check the full included goog-minus-cloud IPv4 allowlist too.
-pub(crate) fn candidates(limit: usize, seed: u64, confirmed: &[Ipv4Addr]) -> Vec<Ipv4Addr> {
+pub(crate) fn candidates(limit: usize, seed: u64,
+                         confirmed: &[Ipv4Addr], dns_candidates: &[Ipv4Addr])
+                         -> Vec<Ipv4Addr> {
     let mut bases = Vec::new();
     for cidr in CORE.split_ascii_whitespace() {
         let Some((raw, mask)) = cidr.split_once('/') else { continue; };
@@ -103,6 +105,9 @@ pub(crate) fn candidates(limit: usize, seed: u64, confirmed: &[Ipv4Addr]) -> Vec
     // Only user-earned, still fresh, same-Network verified IPs may be
     // seeded. Do not pre-authorize any hardcoded "known good" endpoints.
     for &ip in confirmed.iter().take(8) { add(ip, &mut out); }
+    // DNS results belong to the actively selected Android Network, but are
+    // still UNVERIFIED. Verify them like every other IP before persisting.
+    for &ip in dns_candidates.iter().take(8) { add(ip, &mut out); }
     // Sample /24s uniformly across core ranges. Distribute the same
     // OFFSETS across /24s rather than exhaust one huge subnet.
     for (i, &base) in bases.iter().enumerate() {
@@ -152,7 +157,8 @@ fn verify(ip: Ipv4Addr, handle: u64) -> Result<u128, String> {
 }
 
 fn scan(handle: u64, max_candidates: usize, workers: usize,
-        sample_count: usize, confirmed: &[Ipv4Addr], mode: &str) -> Value {
+        sample_count: usize, confirmed: &[Ipv4Addr],
+        dns_candidates: &[Ipv4Addr], mode: &str) -> Value {
     let Ok(_one_scan) = BUSY.try_lock() else {
         return json!({"error":"已有 Google IP 扫描运行中","running":true});
     };
@@ -164,7 +170,7 @@ fn scan(handle: u64, max_candidates: usize, workers: usize,
     let threads = workers.clamp(4, MAX_WORKERS).min(max);
     let seed = SystemTime::now().duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64).unwrap_or(12345) ^ handle;
-    let candidates = candidates(max, seed, confirmed);
+    let candidates = candidates(max, seed, confirmed, dns_candidates);
     TOTAL.store(candidates.len(), Ordering::SeqCst);
     let idx = AtomicUsize::new(0);
     let winners: Mutex<Vec<Endpoint>> = Mutex::new(Vec::new());
@@ -259,6 +265,7 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeOptimizeG
     mut env: JNIEnv<'_>, _class: JClass<'_>,
     handle: jlong, max: jint, workers: jint, speed_mode: jint,
     sample_count: jint, confirmed_ips: JString<'_>,
+    dns_ips: JString<'_>,
 ) -> jstring {
     let mode = if speed_mode != 0 { "speed" } else { "latency" };
     let text = match env.get_string(&confirmed_ips) {
@@ -269,9 +276,17 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeOptimizeG
         .filter_map(|item| item.trim().parse::<Ipv4Addr>().ok())
         .filter(|ip| crate::verify::google_ipv4(*ip))
         .collect();
+    let discovered = match env.get_string(&dns_ips) {
+        Ok(value) => value.to_string_lossy().into_owned(),
+        Err(_) => String::new(),
+    };
+    let dns: Vec<Ipv4Addr> = discovered.split(',').take(8)
+        .filter_map(|item|item.trim().parse::<Ipv4Addr>().ok())
+        .filter(|ip|crate::verify::google_ipv4(*ip))
+        .collect();
     crate::to_java(&mut env,
         &scan(handle as u64,max.max(32) as usize, workers.max(4) as usize,
-            sample_count.max(4) as usize,&confirmed,mode).to_string())
+            sample_count.max(4) as usize,&confirmed,&dns,mode).to_string())
 }
 
 #[unsafe(no_mangle)]
@@ -299,7 +314,7 @@ mod tests {
     use super::*;
     #[test]
     fn all_scan_candidates_are_real_google_range() {
-        let list = candidates(512, 123456, &[]);
+        let list = candidates(512, 123456, &[], &[]);
         assert_eq!(list.len(), 512);
         // No hardcoded "previously verified" IP should be preferred.
         let mut seen = HashSet::new();
@@ -310,17 +325,26 @@ mod tests {
     }
     #[test]
     fn scan_never_creates_unbounded_targets() {
-        assert_eq!(candidates(128, 5, &[]).len(), 128);
+        assert_eq!(candidates(128, 5, &[], &[]).len(), 128);
     }
     #[test]
     fn seeds_only_user_confirmed_candidates_and_deduplicates() {
         let known: Ipv4Addr = "142.250.27.100".parse().unwrap();
         let untrusted: Ipv4Addr = "1.1.1.1".parse().unwrap();
-        let list = candidates(64, 456, &[known,known,untrusted]);
+        let list = candidates(64, 456, &[known,known,untrusted],&[]);
         assert_eq!(list[0],known);
         assert_eq!(list.len(),64);
         assert_eq!(list.iter().filter(|ip| **ip==known).count(),1);
         assert!(!list.contains(&untrusted));
+    }
+    #[test]
+    fn unverified_dns_is_only_a_candidate_and_is_allowlisted() {
+        let google: Ipv4Addr = "142.250.1.155".parse().unwrap();
+        let wrong: Ipv4Addr = "1.1.1.1".parse().unwrap();
+        let list=candidates(96,987,&[],&[google,wrong]);
+        assert_eq!(list[0],google);
+        assert!(!list.contains(&wrong));
+        assert_eq!(list.len(),96);
     }
     #[test]
     fn benchmark_targets_diversify_while_respecting_budget() {

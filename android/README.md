@@ -35,7 +35,7 @@ Official CI builds are permanently signed using the original user-owned key.
 Never push signing keys. If Actions Secrets are unavailable, unsigned-for-
 distribution debug validation builds are not published as user updates.
 
-**Status: 1.0.0-rc4-exp2 (experimental branch).** Download-task resilience, live device tests and
+**Status: 1.0.0-rc4-exp3 (experimental branch).** Download-task resilience, live device tests and
 Workspace export need further validation before a final general release.
 
 ## RC2 interaction refinements
@@ -85,3 +85,14 @@ with explicit feedback. Turbo keeps aria2's existing piece allocator and
 HTTP connection reuse, tracks per-IP TLS download bytes, and uses a cautious
 speed/load-based heuristic for *new* connections after warm-up. No custom
 overlapping Range writes, preemptive chunk theft, or multi-file concurrency.
+
+### exp3: Verified-only route persistence and adaptive discovery
+
+No bundled known-good IP list is shown or silently used. Scans persist
+validated endpoints as per-Network history, with a configurable freshness
+window that prevents old results being used after network changes. Scanning
+offers 3 presets or one fully adjustable custom profile; intelligent sorting
+weights sampled speed, RTT and benchmark confidence and optionally spreads
+selected frontends across /24s. Settings schema 2 remains compatible with
+earlier exported schema 1 backups. Progress is inline rather than a second
+debug button. A scan is required on a new/unvalidated network.

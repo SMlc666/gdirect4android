@@ -73,7 +73,7 @@ fixed-signing keystore injected via GitHub Secrets. CI refuses to distribute
 an APK unless its SHA-256 signing certificate matches the pinned repository
 fingerprint. Never commit or share private signing keys.
 
-**Version status**: v1.0.0-rc4-exp2 is a testable release candidate, not yet a
+**Version status**: v1.0.0-rc4-exp3 is a testable release candidate, not yet a
 production-stability claim. Real-device validation of Material 3 theme, SAF,
 foreground service, background cancellation, route changes and OAuth remains
 required before a final 1.0 label.
@@ -188,3 +188,36 @@ and opens a replacement TCP socket through the adaptive IP policy when needed.
 This provides bounded connection-level work migration and tail opportunities,
 not a risky preemptive in-flight segment takeover. Because carrier paths may
 share the same bottleneck, a speed improvement is not guaranteed.
+
+## RC4-exp3: verified-only, durable and customizable route selection
+
+The three previously bundled "verified" download fallback IPs and all fixed
+native scan/diagnostic seed lists are removed. On a fresh installation, **no
+Google IP is treated as verified**. Scan the selected Android Network first.
+Verified winners are committed to on-device SharedPreferences and survive
+process restarts; their history remains readable after expiration, but ONLY
+fresh checks from the **same active Network handle** may be used for a new
+download or passed to native HTTPS diagnostics. Network handles can change on
+reboot; a new network therefore requires a new scan. No OAuth token or secret
+is saved or exported with the endpoint history.
+
+The routes page has exactly one inline scan-progress meter, with a cancel
+button visible only while scanning; there is no redundant "view progress"
+button. Preset modes Quick (128/16/4), Standard (384/32/12) and Deep
+(768/64/24) are mutually exclusive with Custom. The numbers represent
+candidate IP count / parallel TLS probes / genuine throughput benchmarks.
+Custom exposes all three bounded controls (32–768 / 4–64 / 4–32). The selected
+mode and parameters persist across restarts and are included in JSON export.
+Schema 1 configuration files remain importable; new exports are schema 2.
+
+Sorting offers latency, measured speed and a configurable weighted heuristic
+with a penalty for low-confidence throughput samples. The download fallback
+pool also supports an adjustable subnet diversity preference and manual pin.
+Without real measurements, an endpoint is explicitly marked "未测速": it is
+not invented a speed value. New scanning retains only up to eight fresh
+same-network prior verified candidates as seeds; the other candidates are
+drawn across actual Google non-Cloud network ranges. Benchmarks deliberately
+mix fastest-TLS candidates with distinct /24 prefixes to avoid only sampling
+one edge subnet. None of these scoring heuristics guarantees improvement over
+a shared backbone bottleneck, and all target addresses are independently
+checked against Google's IPv4 allowlist in Rust.

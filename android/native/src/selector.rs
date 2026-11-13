@@ -3,7 +3,7 @@
 //! Bounded scans only; no unbounded /0 sweep or background probes.
 //! Each accepted endpoint passed Google TLS hostname verification and the
 //! actual Drive HTTP 401/403 challenge on the selected Android Network.
-use jni::{objects::JClass, sys::{jint, jlong, jstring}, JNIEnv};
+use jni::{objects::{JClass, JString}, sys::{jint, jlong, jstring}, JNIEnv};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConnection, StreamOwned};
 use serde_json::{json, Value};
@@ -17,20 +17,12 @@ const CORE: &str = "142.250.0.0/15 172.217.0.0/16 172.253.0.0/16 \
     173.194.0.0/16 74.125.0.0/16 192.178.0.0/15 64.233.160.0/19 \
     66.102.0.0/20 108.177.0.0/17 209.85.128.0/17 216.58.192.0/19 \
     216.239.32.0/19 108.170.192.0/18 72.14.192.0/18";
-const KNOWN: [&str; 16] = [
-    "142.250.27.100", "142.250.27.113", "142.250.72.100",
-    "142.250.72.113", "172.217.114.100", "172.217.115.100",
-    "172.253.0.100", "173.194.0.100", "74.125.0.100",
-    "108.177.9.138", "192.178.0.100", "216.58.192.100",
-    "209.85.128.100", "64.233.160.100", "172.217.1.113",
-    "142.250.1.155",
-];
 const OFFSETS: [u8; 7] = [100, 113, 155, 132, 138, 91, 123];
 const HOST: &str = "www.googleapis.com";
 const PROBE: &str = "GET /drive/v3/about?fields=user HTTP/1.1\r\nHost: www.googleapis.com\r\nAccept: application/json\r\nConnection: close\r\nUser-Agent: gdirect-android-endpoint-optimize/0.9.2\r\n\r\n";
 const MAX_CANDIDATES: usize = 768;
 const MAX_WORKERS: usize = 64;
-const BENCHMARK_COUNT: usize = 12;
+const MAX_BENCHMARK_COUNT: usize = 32;
 
 static BUSY: Mutex<()> = Mutex::new(());
 static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -47,6 +39,32 @@ struct Endpoint {
     benchmark_bytes: u64,
 }
 
+/// Benchmark more than the lowest-latency frontends: diversify by /24
+/// and reserve half the sample for low-RTT peers. This avoids one subnet
+/// dominating the throughput ranking without granting unverified IPs.
+fn benchmark_targets(winners: &[Endpoint], budget: usize) -> Vec<Endpoint> {
+    let goal = budget.min(winners.len());
+    let mut targets = Vec::with_capacity(goal);
+    let mut chosen = HashSet::new();
+    let mut subnets = HashSet::new();
+    for item in winners.iter().take(goal.div_ceil(2)) {
+        if chosen.insert(item.ip) {
+            subnets.insert(u32::from(item.ip) >> 8);
+            targets.push(item.clone());
+        }
+    }
+    for item in winners {
+        if targets.len() >= goal { break; }
+        if !subnets.insert(u32::from(item.ip) >> 8) { continue; }
+        if chosen.insert(item.ip) { targets.push(item.clone()); }
+    }
+    for item in winners {
+        if targets.len() >= goal { break; }
+        if chosen.insert(item.ip) { targets.push(item.clone()); }
+    }
+    targets
+}
+
 fn shuffle<T>(values: &mut [T], mut seed: u64) {
     seed |= 1;
     for i in (1..values.len()).rev() {
@@ -60,7 +78,7 @@ fn shuffle<T>(values: &mut [T], mut seed: u64) {
 /// Generates evenly distributed /24 candidates inside the original gdirect
 /// Google's GENERAL frontend blocks, never arbitrary Internet addresses.
 /// Always check the full included goog-minus-cloud IPv4 allowlist too.
-fn candidates(limit: usize, seed: u64) -> Vec<Ipv4Addr> {
+pub(crate) fn candidates(limit: usize, seed: u64, confirmed: &[Ipv4Addr]) -> Vec<Ipv4Addr> {
     let mut bases = Vec::new();
     for cidr in CORE.split_ascii_whitespace() {
         let Some((raw, mask)) = cidr.split_once('/') else { continue; };
@@ -82,18 +100,9 @@ fn candidates(limit: usize, seed: u64) -> Vec<Ipv4Addr> {
             list.push(ip);
         }
     };
-    // Previously user-confirmed real Google endpoints go first.
-    for literal in KNOWN {
-        if let Ok(ip) = literal.parse::<Ipv4Addr>() { add(ip, &mut out); }
-    }
-    // Neighbour offsets from known-working /24s; no v4 /24 is fully swept.
-    for known in ["142.250.27.100", "108.177.9.138", "64.233.160.100"] {
-        let ip: Ipv4Addr = known.parse().unwrap();
-        let base = u32::from(ip) & !255;
-        for &host in &OFFSETS {
-            add(Ipv4Addr::from(base | u32::from(host)), &mut out);
-        }
-    }
+    // Only user-earned, still fresh, same-Network verified IPs may be
+    // seeded. Do not pre-authorize any hardcoded "known good" endpoints.
+    for &ip in confirmed.iter().take(8) { add(ip, &mut out); }
     // Sample /24s uniformly across core ranges. Distribute the same
     // OFFSETS across /24s rather than exhaust one huge subnet.
     for (i, &base) in bases.iter().enumerate() {
@@ -142,7 +151,8 @@ fn verify(ip: Ipv4Addr, handle: u64) -> Result<u128, String> {
     Ok(started.elapsed().as_millis())
 }
 
-fn scan(handle: u64, max_candidates: usize, workers: usize, mode: &str) -> Value {
+fn scan(handle: u64, max_candidates: usize, workers: usize,
+        sample_count: usize, confirmed: &[Ipv4Addr], mode: &str) -> Value {
     let Ok(_one_scan) = BUSY.try_lock() else {
         return json!({"error":"已有 Google IP 扫描运行中","running":true});
     };
@@ -154,7 +164,7 @@ fn scan(handle: u64, max_candidates: usize, workers: usize, mode: &str) -> Value
     let threads = workers.clamp(4, MAX_WORKERS).min(max);
     let seed = SystemTime::now().duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64).unwrap_or(12345) ^ handle;
-    let candidates = candidates(max, seed);
+    let candidates = candidates(max, seed, confirmed);
     TOTAL.store(candidates.len(), Ordering::SeqCst);
     let idx = AtomicUsize::new(0);
     let winners: Mutex<Vec<Endpoint>> = Mutex::new(Vec::new());
@@ -185,11 +195,11 @@ fn scan(handle: u64, max_candidates: usize, workers: usize, mode: &str) -> Value
     let cancelled = CANCELLED.load(Ordering::Relaxed);
     let mut winners = winners.into_inner().unwrap_or_default();
     winners.sort_by_key(|e| e.latency_ms);
-    // The 12 shortest TLS/Drive HTTP response candidates also receive
-    // real Google Discovery JSON throughput verification. Use at most
-    // four independent benchmark connections, not another 64-way wave.
+    // Sample both fast-to-respond and subnet-diverse verified endpoints.
+    // Cap benchmarking at 32 and four simultaneous TLS streams.
     if !cancelled {
-        let benchmarked: Vec<_> = winners.iter().take(BENCHMARK_COUNT).cloned().collect();
+        let benchmarked = benchmark_targets(&winners,
+            sample_count.clamp(4,MAX_BENCHMARK_COUNT));
         let cursor = AtomicUsize::new(0);
         let results = Mutex::new(Vec::<(Ipv4Addr, u64, u128)>::new());
         std::thread::scope(|scope| {
@@ -248,12 +258,20 @@ fn scan(handle: u64, max_candidates: usize, workers: usize, mode: &str) -> Value
 pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeOptimizeGoogle(
     mut env: JNIEnv<'_>, _class: JClass<'_>,
     handle: jlong, max: jint, workers: jint, speed_mode: jint,
+    sample_count: jint, confirmed_ips: JString<'_>,
 ) -> jstring {
     let mode = if speed_mode != 0 { "speed" } else { "latency" };
-    crate::to_java(
-        &mut env,
-        &scan(handle as u64, max.max(32) as usize, workers.max(4) as usize, mode).to_string(),
-    )
+    let text = match env.get_string(&confirmed_ips) {
+        Ok(value) => value.to_string_lossy().into_owned(),
+        Err(_) => String::new(),
+    };
+    let confirmed: Vec<Ipv4Addr> = text.split(',').take(8)
+        .filter_map(|item| item.trim().parse::<Ipv4Addr>().ok())
+        .filter(|ip| crate::verify::google_ipv4(*ip))
+        .collect();
+    crate::to_java(&mut env,
+        &scan(handle as u64,max.max(32) as usize, workers.max(4) as usize,
+            sample_count.max(4) as usize,&confirmed,mode).to_string())
 }
 
 #[unsafe(no_mangle)]
@@ -281,9 +299,9 @@ mod tests {
     use super::*;
     #[test]
     fn all_scan_candidates_are_real_google_range() {
-        let list = candidates(512, 123456);
+        let list = candidates(512, 123456, &[]);
         assert_eq!(list.len(), 512);
-        assert_eq!(list[0], "142.250.27.100".parse::<Ipv4Addr>().unwrap());
+        // No hardcoded "previously verified" IP should be preferred.
         let mut seen = HashSet::new();
         for ip in list {
             assert!(crate::verify::google_ipv4(ip));
@@ -292,6 +310,30 @@ mod tests {
     }
     #[test]
     fn scan_never_creates_unbounded_targets() {
-        assert_eq!(candidates(128, 5).len(), 128);
+        assert_eq!(candidates(128, 5, &[]).len(), 128);
+    }
+    #[test]
+    fn seeds_only_user_confirmed_candidates_and_deduplicates() {
+        let known: Ipv4Addr = "142.250.27.100".parse().unwrap();
+        let untrusted: Ipv4Addr = "8.8.8.8".parse().unwrap();
+        let list = candidates(64, 456, &[known,known,untrusted]);
+        assert_eq!(list[0],known);
+        assert_eq!(list.len(),64);
+        assert_eq!(list.iter().filter(|ip| **ip==known).count(),1);
+        assert!(!list.contains(&untrusted));
+    }
+    #[test]
+    fn benchmark_targets_diversify_while_respecting_budget() {
+        let values: Vec<Endpoint> = ["142.250.0.1","142.250.0.2",
+                "142.250.1.1","142.250.2.1","142.250.3.1"]
+            .iter().enumerate().map(|(i,s)|Endpoint{
+                ip:s.parse().unwrap(),latency_ms:10+i as u128,
+                throughput_kib_s:0.0,benchmark_bytes:0,
+            }).collect();
+        let sampled=benchmark_targets(&values,4);
+        assert_eq!(sampled.len(),4);
+        assert_eq!(sampled[0].ip,values[0].ip);
+        assert_eq!(sampled[1].ip,values[1].ip);
+        assert_eq!(sampled[2].ip,values[2].ip);
     }
 }

@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 const HOST: &str = "www.googleapis.com";
 const URL: &str = "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest";
 const REQUEST: &str = "GET /discovery/v1/apis/drive/v3/rest HTTP/1.1\r\nHost: www.googleapis.com\r\nConnection: close\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nUser-Agent: gdirect-android-transfer-smoke/0.5\r\n\r\n";
-const SAMPLES: [&str; 3] = ["142.250.27.100", "108.177.9.138", "64.233.160.100"];
 const MAX_BODY: usize = 1_048_576;
 const MAX_HEADERS: usize = 16 * 1024;
 const MAX_WIRE: usize = MAX_BODY * 2 + MAX_HEADERS;
@@ -287,12 +286,16 @@ fn sample(ip: IpAddr, handle: u64) -> Result<Sample, String> {
     }
 }
 
-pub fn run(handle: u64) -> String {
+pub fn run(handle: u64, verified: &[IpAddr]) -> String {
+    if verified.is_empty() {
+        return "ERR\n当前网络没有已验证 Google IP；请先扫描".into();
+    }
     let mut report = format!(
-        "Drive API 公开文档传输测试 v0.5\nURL：{URL}\nNetwork handle：{handle}\n每个 IP 最多取样 1 MiB，最多 3 个 IP，串行测试\n\n"
+        "Drive API 公开文档传输测试\nURL：{URL}\nNetwork handle：{handle}\n每个 IP 最多取样 1 MiB，最多 {} 个用户验证 IP，串行测试\n\n",
+        verified.len().min(8)
     );
-    for ip in SAMPLES {
-        let parsed: IpAddr = ip.parse().expect("trusted constant IP");
+    for &parsed in verified.iter().take(8) {
+        let ip=parsed;
         match sample(parsed, handle) {
             Ok(sample) => {
                 let p = sample.progress;

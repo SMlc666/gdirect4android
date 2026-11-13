@@ -86,9 +86,11 @@ public final class SettingsPortabilityTest {
     @Test public void legacySchemaOneSettingsStayImportable() throws Exception {
         JSONObject backup=SettingsPortability.exportToJson(context);
         backup.put("schema",1);
-        backup.getJSONObject("settings").remove("scan_preset")
-            .remove("benchmark_count").remove("speed_weight")
-            .remove("subnet_diversity");
+        JSONObject settings=backup.getJSONObject("settings");
+        settings.remove("scan_preset");
+        settings.remove("benchmark_count");
+        settings.remove("speed_weight");
+        settings.remove("subnet_diversity");
         SettingsPortability.importFromJson(context,backup.toString());
         assertEquals(1,new UserPrefs(context).scanPreset());
         assertEquals(12,new UserPrefs(context).benchmarkCount());

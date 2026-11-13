@@ -762,7 +762,8 @@ public final class MainActivity extends AppCompatActivity {
             try (ParcelFileDescriptor temporary = ParcelFileDescriptor.open(
                     temp,
                     ParcelFileDescriptor.MODE_READ_WRITE | ParcelFileDescriptor.MODE_TRUNCATE)) {
-                String verified=String.join(",",endpointPool.addresses(handle,speedPreferred()));
+                String verified=String.join(",",endpointPool.addresses(handle,
+                    userPrefs.rankMode()==1));
                 if(verified.isEmpty())
                     return "ERR\n当前网络没有有效的 Google IP 验证结果，请先扫描";
                 resultText = nativeSavePublicDriveSchema(handle,temporary.getFd(),verified);

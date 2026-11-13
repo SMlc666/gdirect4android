@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn seeds_only_user_confirmed_candidates_and_deduplicates() {
         let known: Ipv4Addr = "142.250.27.100".parse().unwrap();
-        let untrusted: Ipv4Addr = "8.8.8.8".parse().unwrap();
+        let untrusted: Ipv4Addr = "1.1.1.1".parse().unwrap();
         let list = candidates(64, 456, &[known,known,untrusted]);
         assert_eq!(list[0],known);
         assert_eq!(list.len(),64);

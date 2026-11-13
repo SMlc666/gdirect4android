@@ -56,6 +56,42 @@ public final class TransferQueueTest {
         assertTrue(queue.get(j.id).multiIp);
     }
 
+    @Test public void completedJobPersistsFinalByteCountsAtomically() {
+        TransferQueue.Job j=queue.add("drive","archive","","content://test/file",
+            "wifi","142.250.0.1",1,2792249770L,8,true);
+        assertFalse(queue.complete(j.id,2792249770L));
+        assertTrue(queue.move(j.id,TransferQueue.QUEUED,TransferQueue.RUNNING));
+        assertTrue(queue.complete(j.id,2792249770L));
+        TransferQueue.Job saved=queue.get(j.id);
+        assertEquals(TransferQueue.COMPLETED,saved.state);
+        assertEquals(2792249770L,saved.done);
+        assertEquals(2792249770L,saved.total);
+        assertFalse(queue.complete(j.id,2792249770L));
+    }
+
+    @Test public void terminalRecordRemovalIsImmediateAndSafe() {
+        TransferQueue.Job running=queue.add("active","A","",
+            "content://test/a","wifi","142.250.0.1",1,1024,8);
+        TransferQueue.Job queued=queue.add("waiting","B","",
+            "content://test/b","wifi","142.250.0.1",1,1024,8);
+        TransferQueue.Job done=queue.add("done","C","",
+            "content://test/c","wifi","142.250.0.1",1,1024,8);
+        TransferQueue.Job cancelled=queue.add("cancelled","D","",
+            "content://test/d","wifi","142.250.0.1",1,1024,8);
+        assertTrue(queue.move(running.id,TransferQueue.QUEUED,TransferQueue.RUNNING));
+        assertTrue(queue.move(done.id,TransferQueue.QUEUED,TransferQueue.COMPLETED));
+        assertTrue(queue.move(cancelled.id,TransferQueue.QUEUED,TransferQueue.CANCELLED));
+        assertFalse(queue.removeFinishedRecord(running.id));
+        assertFalse(queue.removeFinishedRecord(queued.id));
+        assertTrue(queue.removeFinishedRecord(done.id));
+        assertNull(queue.get(done.id));
+        assertEquals(1,queue.clearFinished());
+        assertNull(queue.get(cancelled.id));
+        assertNotNull(queue.get(running.id));
+        assertNotNull(queue.get(queued.id));
+        assertFalse(queue.removeFinishedRecord(done.id));
+    }
+
     @Test public void resumeAllDoesNotTouchRunningOrCompleted() {
         TransferQueue.Job running=queue.add("remoteA","A","","content://test/a",
             "wifi","142.250.0.1",1,1024,8);

@@ -60,6 +60,7 @@ tar -xf "$ARIA_TAR" -C "$SRC"
 cd "$SRC/aria2-1.37.0"
 patch -p1 < "$ROOT/vendor/aria2-1.37.0.patch"
 cp "$ROOT/vendor/gdirect_route.h" src/
+cp "$ROOT/android/native/gdirect_ip_policy.h" src/
 cp "$ROOT/native/bridge.cc" android-bridge.cc.original
 python3 "$ROOT/android/native/patch_aria2_android.py"
 export OPENSSL_CFLAGS="-I$SSL/include"

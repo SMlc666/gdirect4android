@@ -59,6 +59,14 @@ jobs:
       - name: Unit-test Android Rust HTTP parser on host
         run: cargo test --manifest-path android/native/Cargo.toml --lib
 
+      - name: Test native adaptive IP routing policy on host
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 -Wall -Wextra -Werror -pedantic \
+            android/native/test_ip_policy.cc -o "$RUNNER_TEMP/test-ip-policy"
+          "$RUNNER_TEMP/test-ip-policy"
+
       - name: Cache Android libaria2 and OpenSSL cross-built archives
         uses: actions/cache@v4
         with:
@@ -68,7 +76,7 @@ jobs:
             android/native/target/vendor/openssl-3.5.9.tar.gz
             android/native/target/vendor/aria2-1.37.0.tar.xz
             android/native/src/aria2_android_bridge.cc
-          key: gdirect-android-arm64-native-openssl3.5.9-aria2-1.37.0-r2-ip-pool
+          key: gdirect-android-arm64-native-openssl3.5.9-aria2-1.37.0-r4-adaptive-reuse
 
       - name: Build patched libaria2 + OpenSSL Android ARM64
         shell: bash

@@ -73,7 +73,7 @@ fixed-signing keystore injected via GitHub Secrets. CI refuses to distribute
 an APK unless its SHA-256 signing certificate matches the pinned repository
 fingerprint. Never commit or share private signing keys.
 
-**Version status**: v1.0.0-rc4-exp1 is a testable release candidate, not yet a
+**Version status**: v1.0.0-rc4-exp2 is a testable release candidate, not yet a
 production-stability claim. Real-device validation of Material 3 theme, SAF,
 foreground service, background cancellation, route changes and OAuth remains
 required before a final 1.0 label.
@@ -154,3 +154,37 @@ increase in speed: if the carrier backbone is the shared bottleneck, changing
 frontend IPs may give no benefit. Test with a sufficiently large file:
 same network, time window and **total** connections, comparing Turbo off
 vs on, and verify file MD5 afterward.
+
+## RC4-exp2: single source of truth and adaptive connections
+
+The downloads page contains **one** durable SQLite-backed task list; there
+is no second volatile current-download card. Running task text/bytes/progress
+update in place without rebuilding the entire list. Terminal records are
+deleted directly from the database in a background operation, with explicit
+success/error feedback. Completed files in the user's document destination
+are never deleted by a record deletion, and queued/running files cannot be
+deleted using the terminal-record action.
+
+When Multi-IP Turbo is enabled, each new TCP connection is initially spread
+across the verified IP pool. Once a minimum set of connections has been
+sampled, gdirect measures **actual TLS application bytes** per endpoint and
+selects subsequent *new* connections by smoothed bandwidth divided by open
+socket load. Active HTTP keepalive sockets and aria2's built-in piece
+allocation/idle piece reassignment are left intact. The UI displays
+approximate live per-IP KiB/s, open socket count and received KiB. This is a
+**conservative work-allocation heuristic**, NOT preemptive theft of a range
+actively written by another connection. We deliberately do not attempt
+unsafe concurrent writes, manual Range overlap or forced cancellation of
+active pieces; completion still requires the original size/MD5 check.
+
+### exp2 safe connection-level work migration
+
+After three consecutive sampled windows with a materially slower endpoint,
+and only after receiving several MiB on that route, the native HTTP keepalive
+pool declines to reuse a finished connection (55% relative performance
+threshold). **The currently active HTTP Range is never interrupted.** aria2
+keeps the checkpoint, assigns unclaimed segments using its own piece manager,
+and opens a replacement TCP socket through the adaptive IP policy when needed.
+This provides bounded connection-level work migration and tail opportunities,
+not a risky preemptive in-flight segment takeover. Because carrier paths may
+share the same bottleneck, a speed improvement is not guaranteed.

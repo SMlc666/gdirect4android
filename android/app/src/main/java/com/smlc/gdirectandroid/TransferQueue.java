@@ -191,6 +191,21 @@ public final class TransferQueue extends SQLiteOpenHelper {
             new String[]{QUEUED,PAUSED,FAILED});
     }
 
+    /** Final state and byte counters must be committed together so the
+     * durable transfer card never shows "completed" with stale 0/0 bytes. */
+    public synchronized boolean complete(String id,long bytes) {
+        if(id==null||bytes<=0)return false;
+        ContentValues values=new ContentValues();
+        values.put("state",COMPLETED);
+        values.put("done",bytes);
+        values.put("total",bytes);
+        values.put("detail","下载完成 · "+String.format(
+            java.util.Locale.ROOT,"%.1f MiB",bytes/1048576.0));
+        values.put("updated",System.currentTimeMillis());
+        return getWritableDatabase().update(TABLE,values,
+            "id=? AND state=?",new String[]{id,RUNNING})==1;
+    }
+
     /** Move a queued job to the front; does not interrupt the current file. */
     public synchronized boolean prioritize(String id) {
         Job selected=get(id);
@@ -228,6 +243,13 @@ public final class TransferQueue extends SQLiteOpenHelper {
         Job task=get(id);
         if(task==null || RUNNING.equals(task.state)) return false;
         return getWritableDatabase().delete(TABLE,"id=?",new String[]{id})==1;
+    }
+    /** A record-delete action must never remove queued or live payloads. */
+    public synchronized boolean removeFinishedRecord(String id) {
+        if(id==null||id.isEmpty())return false;
+        return getWritableDatabase().delete(TABLE,
+            "id=? AND state IN (?,?)",
+            new String[]{id,COMPLETED,CANCELLED})==1;
     }
     public synchronized int clearFinished() {
         return getWritableDatabase().delete(TABLE,"state IN (?,?)",

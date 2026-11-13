@@ -45,6 +45,8 @@ import org.json.JSONObject;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Material 3 product shell. The existing tested Rust/JNI + Drive workflows
@@ -72,8 +74,17 @@ public final class MaterialShell {
     private final View[] pages = new View[4];
     private TextView diagnosticsResult;
     private LinearLayout history;
-    private TextView currentName, currentDetail, currentState;
-    private LinearProgressIndicator progress;
+    private TextView queueSummary;
+    // One canonical UI: SQLite-backed task cards; no competing snapshot card.
+    private final Map<String, TransferRow> transferRows = new HashMap<>();
+    private static final class TransferRow {
+        final TextView detail;
+        final LinearProgressIndicator progress;
+        TransferRow(TextView detail, LinearProgressIndicator progress) {
+            this.detail=detail;
+            this.progress=progress;
+        }
+    }
     private LinearProgressIndicator scanProgressBar;
     private TextView scanProgressLabel;
     private TextView footnote;
@@ -81,7 +92,6 @@ public final class MaterialShell {
     private String lastHistoryKey = "";
     private static final int TRANSFER_PAGE_SIZE = 40;
     private int visibleTransferCount = TRANSFER_PAGE_SIZE;
-    private String lastTransferSignature = "";
 
     private int primary, onSurface, surface, onSurfaceVariant, secondaryContainer;
     public MaterialShell(AppCompatActivity activity, UserPrefs prefs, Slots slots, Bundle restored) {
@@ -163,6 +173,19 @@ public final class MaterialShell {
             shell.setScaleY(0.987f);
         }
         activity.setContentView(shell);
+        // Android 15 enforces edge-to-edge at targetSdk 35. Without a
+        // status-bar inset, the clock/notification icons overlap "gdirect".
+        // Older versions already fit system windows by default.
+        if (Build.VERSION.SDK_INT >= 35) {
+            androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(shell,
+                (view,insets)->{
+                    int top=insets.getInsets(
+                        androidx.core.view.WindowInsetsCompat.Type.statusBars()).top;
+                    view.setPadding(0,top,0,0);
+                    return insets;
+                });
+            androidx.core.view.ViewCompat.requestApplyInsets(shell);
+        }
         if (enteringNewTheme) {
             shell.post(() -> shell.animate()
                 .alpha(1f).scaleX(1f).scaleY(1f).setDuration(380L)
@@ -312,36 +335,12 @@ public final class MaterialShell {
     private View transfersPage() {
         LinearLayout page=stack();
         heading(page,"下载队列","多文件任务、暂停续传与失败恢复；重启应用也会保留任务。");
-        MaterialCardView card=card(page);
-        LinearLayout box=cardContent(card);
-        currentState=text("准备就绪",13,true);
-        currentState.setTextColor(primary);
-        box.addView(currentState);
-        space(box,5);
-        currentName=text("暂无正在进行的任务",20,true);
-        box.addView(currentName);
-        space(box,7);
-        currentDetail=text("选择云盘中的文件，开始一次下载。",13,false);
-        currentDetail.setTextColor(onSurfaceVariant);
-        box.addView(currentDetail);
-        space(box,14);
-        progress=new LinearProgressIndicator(activity);
-        progress.setTrackCornerRadius(dp(4));
-        progress.setIndeterminate(false);
-        box.addView(progress,new LinearLayout.LayoutParams(-1,dp(5)));
-        space(box,17);
-        MaterialButton pause=action("暂停当前下载");
-        pause.setIconResource(android.R.drawable.ic_media_pause);
-        pause.setOnClickListener(v->{
-            TransferService.Snapshot running=TransferService.snapshot();
-            if(running.id.isEmpty() ||
-                !("running".equals(running.status)||"saving".equals(running.status))){
-                notice("当前没有正在运行的任务"); return;
-            }
-            ((MainActivity)activity).queueCommand(TransferService.COMMAND_PAUSE,running.id);
-            haptic();
-        });
-        box.addView(pause);
+        // Only one active download presentation: the durable task list below.
+        // A small count line adds context without duplicating progress/buttons.
+        queueSummary=text("正在读取本机任务…",13,false);
+        queueSummary.setTextColor(onSurfaceVariant);
+        page.addView(queueSummary);
+        space(page,10);
 
         MaterialCardView tasksCard=card(page);
         LinearLayout container=cardContent(tasksCard);
@@ -360,9 +359,7 @@ public final class MaterialShell {
             .setMessage("只清理已完成与已取消的本机任务记录；不会删除下载好的文件或暂停中的断点。")
             .setNegativeButton("返回",null)
             .setPositiveButton("清理",(dialog,which)->{
-                TransferService.clearHistory(activity);
-                lastHistoryKey="";
-                refreshTransfers();
+                ((MainActivity)activity).clearFinishedRecords();
             }).show());
         container.addView(clear);
         refreshTransfers();
@@ -562,7 +559,7 @@ public final class MaterialShell {
 
         MaterialCardView about=card(page);
         LinearLayout version=cardContent(about);
-        label(version,"关于 gdirect","v1.0.0 RC4-exp1 · Android ARM64");
+        label(version,"关于 gdirect","v1.0.0 RC4-exp2 · Android ARM64");
         footnote=text("使用原版 libaria2、Google Drive API 与 Google 官方 TLS 身份验证。"
             +" 浏览器 OAuth 和 Token 刷新使用系统默认网络；文件 API 与下载遵照所选 Android 网络。",13,false);
         footnote.setTextColor(onSurfaceVariant);
@@ -740,121 +737,161 @@ public final class MaterialShell {
         }
     }
 
+    /** Force a structural refresh after a committed SQLite mutation. */
+    public void invalidateTransfers() {
+        lastHistoryKey="";
+        refreshTransfers();
+    }
+
+    /**
+     * SQLite is authoritative for task state, counts and progress. Rebuild
+     * only on structural changes; update running progress and byte details
+     * in place, preserving scroll position and avoiding duplicate cards.
+     */
     public void refreshTransfers() {
-        if(currentName==null||history==null)return;
-        TransferService.Snapshot s=TransferService.snapshot();
-        String signature=s.id+"/"+s.status+"/"+s.done+"/"+s.total+"/"+s.detail;
-        if(!signature.equals(lastTransferSignature)){
-            lastTransferSignature=signature;
-            boolean active="running".equals(s.status)||"saving".equals(s.status)
-                ||"cancelling".equals(s.status);
-            if (navigation != null) {
-                if (active) navigation.getOrCreateBadge(TRANSFERS).setVisible(true);
+        if(history==null)return;
+        TransferService.Snapshot snapshot=TransferService.snapshot();
+        if(currentPage!=1 && currentPage!=-1) {
+            if(navigation!=null) {
+                if("running".equals(snapshot.status)||"saving".equals(snapshot.status))
+                    navigation.getOrCreateBadge(TRANSFERS).setVisible(true);
                 else navigation.removeBadge(TRANSFERS);
             }
-            currentState.setText(active?"进行中":"completed".equals(s.status)?"已完成":
-                "failed".equals(s.status)?"失败":"cancelled".equals(s.status)?"已取消":"准备就绪");
-            currentName.setText(s.name.isEmpty()?"暂无正在进行的任务":s.name);
-            currentDetail.setText(s.detail);
-            int percentage=s.percent();
-            progress.setIndeterminate(active&&percentage<0);
-            if(percentage>=0){
-                progress.setIndeterminate(false);
-                progress.setProgressCompat(percentage,prefs.animations());
-            }else if(!active){
-                progress.setIndeterminate(false);
-                progress.setProgressCompat(0,false);
-            }
-        }
-        // The active summary badge is global; avoid opening SQLite and
-        // rebuilding 100 file cards while viewing another destination.
-        if (currentPage!=1 && currentPage!=-1) return;
-        JSONArray queued=TransferService.tasks(activity);
-        // Avoid tearing down the entire list every time the active byte
-        // counter changes. Live progress stays in the summary header above.
-        StringBuilder fingerprint=new StringBuilder();
-        for(int i=0;i<queued.length();i++){
-            JSONObject job=queued.optJSONObject(i);
-            if(job!=null)fingerprint.append(job.optString("id"))
-                .append(':').append(job.optString("state")).append(';');
-        }
-        String key=fingerprint.toString();
-        if(key.equals(lastHistoryKey))return;
-        lastHistoryKey=key;
-        history.removeAllViews();
-        if(queued.length()==0){
-            TextView hint=text("还没有下载任务。打开「文件」选择多个文件，任务会自动排队。",14,false);
-            hint.setTextColor(onSurfaceVariant);
-            hint.setPadding(0,dp(12),0,dp(18));
-            history.addView(hint);
             return;
         }
-        for(int i=0;i<Math.min(visibleTransferCount,queued.length());i++){
+        JSONArray queued=TransferService.tasks(activity);
+        int active=0,pending=0,finished=0;
+        StringBuilder fingerprint=new StringBuilder();
+        for(int i=0;i<queued.length();i++) {
             JSONObject job=queued.optJSONObject(i);
             if(job==null)continue;
-            final String id=job.optString("id");
-            final String state=job.optString("state");
-            MaterialCardView card=new MaterialCardView(activity);
-            card.setRadius(dp(16)); card.setCardElevation(0);
-            card.setCardBackgroundColor(color(
-                com.google.android.material.R.attr.colorSurfaceContainerHigh,surface));
-            LinearLayout inner=stack();
-            inner.setPadding(dp(13),dp(14),dp(13),dp(12));
-            TextView name=text(job.optString("name","未命名文件"),15,true);
-            name.setMaxLines(2);inner.addView(name);
-            String stateLabel="queued".equals(state)?"等待下载":
-                "running".equals(state)?"下载中":
-                "paused".equals(state)?"已暂停":
-                "failed".equals(state)?"失败":
-                "completed".equals(state)?"已完成":
-                "cancelled".equals(state)?"已取消":state;
-            TextView stateText=text(stateLabel+" · "+job.optString("route","")
-                +(job.optBoolean("multi_ip",false)?" · Multi-IP Turbo":""),12,false);
-            stateText.setTextColor("failed".equals(state)?
-                color(android.R.attr.colorError,primary):onSurfaceVariant);
-            inner.addView(stateText);
-            TextView details=text(job.optString("detail",""),12,false);
-            details.setTextColor(onSurfaceVariant);
-            details.setMaxLines(3);
-            inner.addView(details);
-            LinearLayout controls=new LinearLayout(activity);
-            controls.setOrientation(LinearLayout.HORIZONTAL);
-            controls.setPadding(0,dp(8),0,0);
-            switch(state){
-                case "queued":
-                    taskButton(controls,"置顶",TransferService.COMMAND_PRIORITY,id);
-                    taskButton(controls,"暂停",TransferService.COMMAND_PAUSE,id);
-                    taskButton(controls,"取消",TransferService.COMMAND_CANCEL,id);
-                    break;
-                case "running":
-                    taskButton(controls,"暂停",TransferService.COMMAND_PAUSE,id);
-                    taskButton(controls,"取消",TransferService.COMMAND_CANCEL,id);
-                    break;
-                case "paused":
-                case "failed":
-                    taskButton(controls,"继续",TransferService.COMMAND_RESUME,id);
-                    taskButton(controls,"取消",TransferService.COMMAND_CANCEL,id);
-                    break;
-                default:
-                    taskButton(controls,"删除记录",TransferService.COMMAND_REMOVE,id);
-                    break;
-            }
-            inner.addView(controls);
-            card.addView(inner);
-            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
-            lp.topMargin=dp(9);
-            history.addView(card,lp);
+            String state=job.optString("state");
+            if("running".equals(state))active++;
+            else if("queued".equals(state)||"paused".equals(state)||"failed".equals(state))
+                pending++;
+            else finished++;
+            fingerprint.append(job.optString("id")).append(':').append(state)
+                .append(':').append(job.optString("route"))
+                .append(':').append(job.optBoolean("multi_ip",false)).append(';');
         }
-        if(queued.length()>visibleTransferCount){
-            MaterialButton more=action("加载更多任务 · 已显示 "
-                +visibleTransferCount+" / "+queued.length());
-            more.setOnClickListener(v->{
-                visibleTransferCount=Math.min(visibleTransferCount+TRANSFER_PAGE_SIZE,
-                    queued.length());
-                lastHistoryKey="";
-                refreshTransfers();
-            });
-            history.addView(more);
+        queueSummary.setText("正在下载 "+active+" · 等待或暂停 "+pending+
+            " · 已结束 "+finished+" · 合计 "+queued.length()+" 项");
+        if(navigation!=null) {
+            if(active>0)navigation.getOrCreateBadge(TRANSFERS).setVisible(true);
+            else navigation.removeBadge(TRANSFERS);
+        }
+        String key=fingerprint.toString()+"#"+visibleTransferCount;
+        if(!key.equals(lastHistoryKey)) {
+            lastHistoryKey=key;
+            transferRows.clear();
+            history.removeAllViews();
+            if(queued.length()==0) {
+                TextView hint=text("还没有下载任务。打开「文件」选择文件，任务会自动排队。",14,false);
+                hint.setTextColor(onSurfaceVariant);
+                hint.setPadding(0,dp(12),0,dp(18));
+                history.addView(hint);
+                return;
+            }
+            for(int i=0;i<Math.min(visibleTransferCount,queued.length());i++) {
+                JSONObject job=queued.optJSONObject(i);
+                if(job==null)continue;
+                final String id=job.optString("id");
+                final String state=job.optString("state");
+                MaterialCardView card=new MaterialCardView(activity);
+                card.setRadius(dp(16));card.setCardElevation(0);
+                card.setCardBackgroundColor(color(
+                    com.google.android.material.R.attr.colorSurfaceContainerHigh,surface));
+                LinearLayout inner=stack();
+                inner.setPadding(dp(13),dp(14),dp(13),dp(12));
+                TextView name=text(job.optString("name","未命名文件"),15,true);
+                name.setMaxLines(2);inner.addView(name);
+                String stateLabel="queued".equals(state)?"等待下载":
+                    "running".equals(state)?"下载中":
+                    "paused".equals(state)?"已暂停":
+                    "failed".equals(state)?"失败":
+                    "completed".equals(state)?"已完成":
+                    "cancelled".equals(state)?"已取消":state;
+                TextView stateText=text(stateLabel+" · "+job.optString("route","")
+                    +(job.optBoolean("multi_ip",false)?" · Multi-IP Turbo":""),12,false);
+                stateText.setTextColor("failed".equals(state)?
+                    color(android.R.attr.colorError,primary):onSurfaceVariant);
+                inner.addView(stateText);
+                TextView detail=text("",12,false);
+                detail.setTextColor(onSurfaceVariant);
+                detail.setMaxLines(4);
+                inner.addView(detail);
+                space(inner,9);
+                LinearProgressIndicator bar=new LinearProgressIndicator(activity);
+                bar.setTrackCornerRadius(dp(4));
+                bar.setIndeterminate(false);
+                inner.addView(bar,new LinearLayout.LayoutParams(-1,dp(5)));
+                transferRows.put(id,new TransferRow(detail,bar));
+                LinearLayout controls=new LinearLayout(activity);
+                controls.setOrientation(LinearLayout.HORIZONTAL);
+                controls.setPadding(0,dp(8),0,0);
+                switch(state) {
+                    case "queued":
+                        taskButton(controls,"置顶",TransferService.COMMAND_PRIORITY,id);
+                        taskButton(controls,"暂停",TransferService.COMMAND_PAUSE,id);
+                        taskButton(controls,"取消",TransferService.COMMAND_CANCEL,id);
+                        break;
+                    case "running":
+                        taskButton(controls,"暂停",TransferService.COMMAND_PAUSE,id);
+                        taskButton(controls,"取消",TransferService.COMMAND_CANCEL,id);
+                        break;
+                    case "paused":
+                    case "failed":
+                        taskButton(controls,"继续",TransferService.COMMAND_RESUME,id);
+                        taskButton(controls,"取消",TransferService.COMMAND_CANCEL,id);
+                        break;
+                    case "completed":
+                    case "cancelled":
+                        taskButton(controls,"删除记录",TransferService.COMMAND_REMOVE,id);
+                        break;
+                }
+                if(controls.getChildCount()>0)inner.addView(controls);
+                card.addView(inner);
+                LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
+                lp.topMargin=dp(9);
+                history.addView(card,lp);
+            }
+            if(queued.length()>visibleTransferCount) {
+                MaterialButton more=action("加载更多任务 · 已显示 "
+                    +visibleTransferCount+" / "+queued.length());
+                more.setOnClickListener(v->{
+                    visibleTransferCount=Math.min(visibleTransferCount+TRANSFER_PAGE_SIZE,
+                        queued.length());
+                    invalidateTransfers();
+                });
+                history.addView(more);
+            }
+        }
+        // Keep each card's live text and determinate progress synchronized
+        // with the same SQLite job journal that survives a process restart.
+        for(int i=0;i<Math.min(visibleTransferCount,queued.length());i++) {
+            JSONObject job=queued.optJSONObject(i);
+            if(job==null)continue;
+            TransferRow row=transferRows.get(job.optString("id"));
+            if(row==null)continue;
+            long done=job.optLong("done",0),total=job.optLong("total",-1);
+            String detail=job.optString("detail","");
+            String progressText=total>0 ? 
+                " · "+String.format(Locale.ROOT,"%.1f%%",100d*done/total) :
+                (done>0?" · "+done+" 字节":"");
+            String label=detail+progressText;
+            if(!label.contentEquals(row.detail.getText()))row.detail.setText(label);
+            if(total>0) {
+                row.progress.setVisibility(View.VISIBLE);
+                row.progress.setIndeterminate(false);
+                int pct=(int)Math.max(0,Math.min(100,done*100d/total));
+                if("completed".equals(job.optString("state")))pct=100;
+                if(row.progress.getProgress()!=pct)
+                    row.progress.setProgressCompat(pct,prefs.animations());
+            }else {
+                row.progress.setVisibility("running".equals(job.optString("state"))?
+                    View.VISIBLE:View.GONE);
+                if("running".equals(job.optString("state")))row.progress.setIndeterminate(true);
+            }
         }
     }
     private void taskButton(LinearLayout row,String text,String command,String id){
@@ -866,8 +903,10 @@ public final class MaterialShell {
         row.addView(b,lp);
         b.setOnClickListener(v->{
             ((MainActivity)activity).queueCommand(command,id);
-            lastHistoryKey="";
-            history.postDelayed(this::refreshTransfers,250);
+            // Command completion is asynchronous; the periodic DB refresh
+            // updates state only after the service or direct delete commits.
+            if(!TransferService.COMMAND_REMOVE.equals(command))
+                history.postDelayed(this::refreshTransfers,250);
         });
     }
     public void notice(String message){

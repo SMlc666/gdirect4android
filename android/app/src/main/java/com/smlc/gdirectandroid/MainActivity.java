@@ -69,14 +69,15 @@ public final class MainActivity extends AppCompatActivity {
     private static native String nativeVerifyGoogleIp(String ip, long networkHandle);
     private static native String nativeScanGoogle(long networkHandle);
     private static native String nativeOptimizeGoogle(
-        long networkHandle, int maxCandidates, int workers, int speedMode);
+        long networkHandle, int maxCandidates, int workers, int speedMode,
+        int benchmarkCount, String recentlyVerifiedIps, String selectedNetworkDnsIps);
     static native String nativeGoogleScanProgress();
     private static native void nativeCancelGoogleScan();
     static native String nativeDriveApiRequest(
         String url, String method, String accessToken, String jsonBody,
         long networkHandle, String pinnedIp);
-    private static native String nativeTransferSample(long networkHandle);
-    private static native String nativeSavePublicDriveSchema(long networkHandle, int cacheFd);
+    private static native String nativeTransferSample(long networkHandle,String verifiedIps);
+    private static native String nativeSavePublicDriveSchema(long networkHandle,int cacheFd,String verifiedIps);
     static native String nativeDownloadDrive(
         String fileId, String accessToken, String caPath,
         String cacheDir, String cacheName, long networkHandle, String rankedIps, int connections,
@@ -184,24 +185,20 @@ public final class MainActivity extends AppCompatActivity {
         scanLevel = new Spinner(this);
         scanLevel.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
             new String[] {
-                "快速 · 128 IP / 16线程",
-                "标准 · 384 IP / 32线程",
-                "深度 · 768 IP / 64线程",
-                "自定义 · 使用设置中的扫描参数"
+                "快速 · 128 候选 / 16 并发 / 4 测速",
+                "标准 · 384 候选 / 32 并发 / 12 测速",
+                "深度 · 768 候选 / 64 并发 / 24 测速",
+                "自定义 · 在此调整全部扫描参数"
             }));
-        scanLevel.setSelection(3);
+        scanLevel.setSelection(userPrefs.scanPreset());
         root.addView(scanLevel);
         text(root, "Google 节点优选策略", 16, INK);
         rankPreference = new Spinner(this);
         rankPreference.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
-            new String[] { "低延迟优先（Drive API）", "传输速度优先（大文件）" }));
+            new String[] { "低延迟优先", "实测速率优先", "智能均衡 · 延迟 / 速度 / 可信度" }));
         rankPreference.setSelection(userPrefs.rankMode());
         root.addView(rankPreference);
         scanButton = button(root, "扫描 Google IP 并自动优选（真 TLS + Drive API）");
-        Button scanProgressButton = button(root, "查看扫描进度");
-        scanProgressButton.setOnClickListener(v -> {
-            if (LOADED) result.setText("Google IP 扫描状态\n" + nativeGoogleScanProgress());
-        });
         Button scanCancelButton = button(root, "取消当前 Google IP 扫描");
         scanCancelButton.setOnClickListener(v -> {
             if (LOADED) nativeCancelGoogleScan();
@@ -224,15 +221,24 @@ public final class MainActivity extends AppCompatActivity {
                 updateEndpointSummary();
             }
         });
+        scanLevel.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+            @Override public void onItemSelected(AdapterView<?> parent,
+                android.view.View view,int position,long id) {
+                userPrefs.scanPreset(position);
+                if(shell!=null)shell.updateScanMode(position);
+            }
+        });
         rankPreference.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onNothingSelected(AdapterView<?> parent) {}
             @Override public void onItemSelected(
                 AdapterView<?> parent, android.view.View view, int position, long id) {
                 userPrefs.rankMode(position);
+                if(shell!=null)shell.updateRankMode(position);
                 updateEndpointChoices();
             }
         });
-        transferButton = button(root, "传输测试：从已验证的 3 个 IP 下载公开 API 数据");
+        transferButton = button(root, "使用当前验证结果测试 Google API 传输");
         saveButton = button(root, "真实保存文件：Google Drive API 公开文档 JSON");
         text(root, "指定 Google IP 测试", 17, INK);
         EditText ipInput = new EditText(this);
@@ -320,34 +326,61 @@ public final class MainActivity extends AppCompatActivity {
         });
         transferButton.setOnClickListener(v -> {
             Choice choice = selected();
-            if (choice != null) probe(() -> choice.title + "\n" + nativeTransferSample(choice.handle));
+            if (choice != null) {
+                String verified=String.join(",",endpointPool.addresses(choice.handle,speedPreferred()));
+                if(verified.isEmpty()) {
+                    if(shell!=null)shell.notice("当前网络尚无有效 IP，请先扫描");
+                    return;
+                }
+                probe(() -> choice.title + "\n" + nativeTransferSample(choice.handle,verified));
+            }
         });
         scanButton.setOnClickListener(v -> {
-            Choice choice = selected();
-            if (choice == null) return;
-            int level = scanLevel.getSelectedItemPosition();
-            int[] sizes = { 128, 384, 768, userPrefs.scanSize() };
-            int[] threads = { 16, 32, 64, userPrefs.scanThreads() };
-            int index = Math.max(0, Math.min(level, sizes.length - 1));
-            boolean speed = speedPreferred();
-            probe(() -> {
-                String raw = nativeOptimizeGoogle(
-                    choice.handle, sizes[index], threads[index], speed ? 1 : 0);
-                JSONObject data = new JSONObject(raw);
-                if (data.has("error")) {
-                    return "Google IP 扫描失败：" + data.optString("error");
-                }
-                int stored = endpointPool.accept(choice.handle, data);
+            Choice choice=selected();
+            if(choice==null)return;
+            final int profile=userPrefs.scanPreset();
+            final int[] candidates={128,384,768,userPrefs.scanSize()};
+            final int[] workers={16,32,64,userPrefs.scanThreads()};
+            final int[] benchmarks={4,12,24,userPrefs.benchmarkCount()};
+            final int position=Math.max(0,Math.min(3,profile));
+            final int ranking=userPrefs.rankMode();
+            final String freshSeeds=String.join(",",
+                endpointPool.verifiedSeedIps(choice.handle));
+            probe(()->{
+                String dns=discoverCurrentNetworkGoogleIps(choice);
+                String raw=nativeOptimizeGoogle(choice.handle,
+                    candidates[position],workers[position],
+                    ranking==1?1:0,benchmarks[position],freshSeeds,dns);
+                JSONObject data=new JSONObject(raw);
+                if(data.has("error"))
+                    return "Google IP 扫描失败："+data.optString("error");
+                int stored=endpointPool.accept(choice.handle,data);
                 runOnUiThread(this::updateEndpointChoices);
-                return choice.title
-                    + "\n候选检测：" + data.optInt("probed") + "/" + data.optInt("requested")
-                    + " · TLS/Drive 验证通过：" + data.optInt("success")
-                    + " · 并发：" + data.optInt("concurrency")
-                    + (data.optBoolean("cancelled") ? "\n扫描已取消" : "")
-                    + "\n新写入优选列表：" + stored
-                    + "\n" + endpointPool.summary(choice.handle, speed)
-                    + "\n所有优选结果仅来自 HTTPS 证书及 Google Drive API 验证；无法确保未来始终可达。";
+                return choice.title+
+                    "\n本次扫描："+data.optInt("probed")+"/"+data.optInt("requested")+
+                    " · TLS/Drive 验证通过："+data.optInt("success")+
+                    " · 并发："+data.optInt("concurrency")+
+                    (data.optBoolean("cancelled")?"\n扫描已取消":"")+
+                    "\n本次持久保存的验证结果："+stored+
+                    "\n"+endpointPool.summary(choice.handle,ranking==1)+
+                    "\n扫描结果不会跨网络或过期后自动使用；无预置成功 IP。";
             });
+        });
+        Button clearVerified=button(root,"清空当前网络的已验证 IP 历史");
+        clearVerified.setOnClickListener(v->{
+            Choice chosen=selected();
+            if(chosen==null)return;
+            new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                .setTitle("清空当前网络的验证记录？")
+                .setMessage("此操作会移除本机保存的扫描结果及手动置顶选择。"
+                    +"已入队任务仍保留原来的 IP 快照。")
+                .setNegativeButton("取消",null)
+                .setPositiveButton("清空",(dialog,which)->{
+                    boolean ok=endpointPool.clear(chosen.handle);
+                    updateEndpointChoices();
+                    if(shell!=null)shell.notice(ok?"已清空当前网络验证记录":
+                        "清空记录失败");
+                }).show();
         });
         manualTlsButton.setOnClickListener(v -> {
             Choice choice = selected();
@@ -393,11 +426,13 @@ public final class MainActivity extends AppCompatActivity {
         slots.refresh = refreshButton;
         slots.scan = scanButton;
         slots.scanCancel = scanCancelButton;
-        slots.scanProgress = scanProgressButton;
+        slots.clearVerified = clearVerified;
         slots.networkDetails = details;
         slots.endpointSummary = endpointSummary;
         slots.scanResult = result;
         shell = new MaterialShell(this, userPrefs, slots, savedInstanceState);
+        shell.updateScanMode(userPrefs.scanPreset());
+        shell.updateRankMode(userPrefs.rankMode());
         if (savedInstanceState != null) {
             pendingSaveNetwork = savedInstanceState.getLong("pendingSaveNetwork", -1L);
             pendingSaveNetworkLabel = savedInstanceState.getString("pendingSaveNetworkLabel", "");
@@ -504,9 +539,33 @@ public final class MainActivity extends AppCompatActivity {
         updateEndpointChoices();
     }
 
+    /**
+     * DNS is a source of UNVERIFIED scan candidates, never a replacement for
+     * the selected Network's TLS/Drive validation and Google allowlist.
+     * Resolve only on the scan worker so the Android UI never blocks on DNS.
+     */
+    private String discoverCurrentNetworkGoogleIps(Choice choice) {
+        try {
+            InetAddress[] resolved=choice.network==null?
+                InetAddress.getAllByName("www.googleapis.com"):
+                choice.network.getAllByName("www.googleapis.com");
+            java.util.LinkedHashSet<String> distinct=new java.util.LinkedHashSet<>();
+            for(InetAddress address:resolved) {
+                if(address instanceof Inet4Address)
+                    distinct.add(address.getHostAddress());
+                if(distinct.size()==8)break;
+            }
+            return String.join(",",distinct);
+        }catch(Exception ignored) {
+            return ""; // Continue a bounded scan without DNS seeding.
+        }
+    }
+
     private boolean speedPreferred() {
         return rankPreference != null && rankPreference.getSelectedItemPosition() == 1;
     }
+    /** Called when adaptive ranking sliders are changed in the route UI. */
+    public void refreshEndpointRanking() { updateEndpointChoices(); }
     private void updateEndpointSummary() {
         if (endpointPool == null || endpointSummary == null) return;
         Choice c = selected();
@@ -726,7 +785,11 @@ public final class MainActivity extends AppCompatActivity {
             try (ParcelFileDescriptor temporary = ParcelFileDescriptor.open(
                     temp,
                     ParcelFileDescriptor.MODE_READ_WRITE | ParcelFileDescriptor.MODE_TRUNCATE)) {
-                resultText = nativeSavePublicDriveSchema(handle, temporary.getFd());
+                String verified=String.join(",",endpointPool.addresses(handle,
+                    userPrefs.rankMode()==1));
+                if(verified.isEmpty())
+                    return "ERR\n当前网络没有有效的 Google IP 验证结果，请先扫描";
+                resultText = nativeSavePublicDriveSchema(handle,temporary.getFd(),verified);
             }
             if (!resultText.startsWith("OK\n")) {
                 return label + "\n" + resultText

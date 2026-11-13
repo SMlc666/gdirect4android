@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 const HOST: &str = "www.googleapis.com";
 const PATH: &str = "/discovery/v1/apis/drive/v3/rest";
 const REQUEST: &str = "GET /discovery/v1/apis/drive/v3/rest HTTP/1.1\r\nHost: www.googleapis.com\r\nConnection: close\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nUser-Agent: gdirect-android-file-save/0.6\r\n\r\n";
-const IP_POOL: [&str; 3] = ["142.250.27.100", "108.177.9.138", "64.233.160.100"];
 const MAX_BODY: u64 = 8 * 1024 * 1024;
 const MAX_HEADERS: usize = 16 * 1024;
 
@@ -203,7 +202,10 @@ pub(crate) fn benchmark(ip: IpAddr, handle: u64) -> Result<(u64, u128), String> 
     Ok((receipt.bytes, begun.elapsed().as_millis()))
 }
 
-pub fn save(handle: u64, source_fd: i32) -> String {
+pub fn save(handle: u64, source_fd: i32, verified: &[IpAddr]) -> String {
+    if verified.is_empty() {
+        return "ERR\n当前网络没有已验证 Google IP；请先扫描".into();
+    }
     if source_fd < 0 { return "ERR\n无效文件描述符".into(); }
     let fd = unsafe { libc::dup(source_fd) };
     if fd < 0 {
@@ -213,11 +215,10 @@ pub fn save(handle: u64, source_fd: i32) -> String {
     // continues to belong to Java and must be closed by Java.
     let mut file = unsafe { File::from_raw_fd(fd) };
     let mut failures = Vec::new();
-    for candidate in IP_POOL {
+    for &ip in verified.iter().take(8) {
         if let Err(e) = file.set_len(0).and_then(|()| file.seek(SeekFrom::Start(0)).map(|_| ())) {
             return format!("ERR\n重置临时文件失败：{e}");
         }
-        let ip: IpAddr = candidate.parse().expect("fixed trusted IP");
         match download_one(ip, handle, &mut file) {
             Ok((receipt, spent)) if receipt.bytes > 0 => {
                 return format!(
@@ -230,7 +231,7 @@ pub fn save(handle: u64, source_fd: i32) -> String {
         }
     }
     let _ = file.set_len(0);
-    format!("ERR\n三个候选均无法完成下载（用户文档未写入数据）：\n{}", failures.join("\n"))
+    format!("ERR\n当前网络的 {} 个验证节点均无法完成下载（目标文件未写入）：\n{}", verified.len().min(8), failures.join("\n"))
 }
 
 #[cfg(test)]

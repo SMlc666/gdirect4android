@@ -14,20 +14,6 @@ const CERTS: &str = include_str!("../../../src/gts-roots.pem");
 const TARGET: &str = "www.googleapis.com";
 const REQUEST: &str = "GET /drive/v3/about?fields=user HTTP/1.1\r\nHost: www.googleapis.com\r\nConnection: close\r\nUser-Agent: gdirect-android-diagnostics/0.3\r\nAccept: application/json\r\n\r\n";
 
-/// A deliberately small sample from Google's published non-Cloud service
-/// space (source: upstream gdirect src/google-ranges.txt and src/scan.rs).
-/// Do not extrapolate a success rate or perform a background range sweep.
-const SEEDS: [&str; 16] = [
-    "142.250.27.100", "142.250.27.113",
-    "142.250.72.100", "142.250.72.113",
-    "172.217.114.100", "172.217.115.100",
-    "172.253.0.100", "173.194.0.100",
-    "74.125.0.100", "108.177.9.138",
-    "192.178.0.100", "216.58.192.100",
-    "209.85.128.100", "64.233.160.100",
-    "172.217.1.113", "142.250.1.155",
-];
-
 static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
 
 // Authoritative allowlist for bearer-bearing Drive API connections and
@@ -169,19 +155,23 @@ pub fn inspect(ip: &str, handle: u64) -> String {
 }
 
 pub fn scan(handle: u64) -> String {
+    let seed=std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|time|time.as_nanos() as u64).unwrap_or(12345);
+    let sample=crate::selector::candidates(16,seed ^ handle,&[],&[]);
     let cursor = AtomicUsize::new(0);
     let records: Mutex<Vec<(bool, String)>> =
-        Mutex::new(vec![(false, String::new()); SEEDS.len()]);
+        Mutex::new(vec![(false, String::new()); sample.len()]);
     // Four threads, at most 16 destinations, no background sweeping.
     std::thread::scope(|scope| {
         for _ in 0..4 {
             let cursor = &cursor;
             let records = &records;
+            let sample=&sample;
             scope.spawn(move || loop {
                 let index = cursor.fetch_add(1, Ordering::Relaxed);
-                if index >= SEEDS.len() { break; }
-                let ip: IpAddr = SEEDS[index].parse().expect("trusted static Google IP");
-                let result = trial(ip, handle);
+                if index >= sample.len() { break; }
+                let result = trial(IpAddr::V4(sample[index]),handle);
                 if let Ok(mut guard) = records.lock() {
                     guard[index] = result;
                 }

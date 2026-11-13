@@ -62,7 +62,7 @@ public final class MaterialShell {
             downloadCancel;
         public TextView networkDetails, endpointSummary, scanResult;
 
-        public View refresh, scan, scanCancel, scanProgress;
+        public View refresh, scan, scanCancel, clearVerified;
     }
 
     private final AppCompatActivity activity;
@@ -85,6 +85,7 @@ public final class MaterialShell {
             this.progress=progress;
         }
     }
+    private LinearLayout customScanControls,scoringControls;
     private LinearProgressIndicator scanProgressBar;
     private TextView scanProgressLabel;
     private TextView footnote;
@@ -377,9 +378,44 @@ public final class MaterialShell {
 
         MaterialCardView optimize=card(page);
         LinearLayout optimized=cardContent(optimize);
-        label(optimized,"Google IP 智能优选","通过 TLS、Google Drive API 与短文件测速验证节点。");
+        label(optimized,"Google IP 智能优选",
+            "只有真实 TLS 与 Drive API 校验通过的 IP 才能加入下载池。没有内置已验证节点。");
+        TextView hint=text("快速 / 标准 / 深度是完整预设；选择自定义后可独立设置规模、"
+            +"并发和测速数量。每次扫描都有明确上限。",12,false);
+        hint.setTextColor(onSurfaceVariant);
+        optimized.addView(hint);
+        space(optimized,9);
         move(optimized,slots.scanPreset);
+        customScanControls=stack();
+        slider(customScanControls,"候选 IPv4 数量",32,768,32,
+            prefs.scanSize(),n->prefs.scanSize(n));
+        slider(customScanControls,"TLS 并发数",4,64,4,
+            prefs.scanThreads(),n->prefs.scanThreads(n));
+        slider(customScanControls,"真实吞吐测速节点数",4,32,4,
+            prefs.benchmarkCount(),n->prefs.benchmarkCount(n));
+        optimized.addView(customScanControls);
+        updateScanMode(prefs.scanPreset());
+        space(optimized,12);
+        label(optimized,"优选排序","可在延迟、速度和启发式综合评分之间切换。");
         move(optimized,slots.ranking);
+        scoringControls=stack();
+        slider(scoringControls,"智能排序的速率权重（%）",0,100,5,
+            prefs.scoreSpeedWeight(),n->{
+                prefs.scoreSpeedWeight(n);
+                ((MainActivity)activity).refreshEndpointRanking();
+            });
+        TextView confidence=text("评分依据：延迟、实测速度、测速样本量；"
+            +"短文件测速不能代替长时间吞吐。",12,false);
+        confidence.setTextColor(onSurfaceVariant);
+        scoringControls.addView(confidence);
+        optimized.addView(scoringControls);
+        updateRankMode(prefs.rankMode());
+        slider(optimized,"优选池跨 /24 网段分散倾向（%）",0,100,10,
+            prefs.subnetDiversity(),n->{
+                prefs.subnetDiversity(n);
+                ((MainActivity)activity).refreshEndpointRanking();
+            });
+        space(optimized,12);
         move(optimized,slots.scan);
         scanProgressBar = new LinearProgressIndicator(activity);
         scanProgressBar.setTrackCornerRadius(dp(4));
@@ -389,16 +425,16 @@ public final class MaterialShell {
         scanProgressLabel.setTextColor(onSurfaceVariant);
         scanProgressLabel.setVisibility(View.GONE);
         optimized.addView(scanProgressLabel);
-        LinearLayout buttons=new LinearLayout(activity);
-        buttons.setOrientation(LinearLayout.HORIZONTAL);
-        optimizeButtons(buttons,slots.scanProgress,slots.scanCancel);
-        optimized.addView(buttons);
-        space(optimized,10);
-        label(optimized,"优先使用","可以手动选择刚刚验证过的 Google 前端 IP。");
+        move(optimized,slots.scanCancel);
+        if(slots.scanCancel!=null)slots.scanCancel.setVisibility(View.GONE);
+        space(optimized,12);
+        label(optimized,"当前验证与优先节点",
+            "扫描记录持久保存在本机；超出有效期仅供历史查看，需要重新扫描。");
         move(optimized,slots.preferredIp);
         move(optimized,slots.endpointSummary);
-        if (slots.endpointSummary != null)
+        if(slots.endpointSummary!=null)
             slots.endpointSummary.setTextColor(onSurfaceVariant);
+        move(optimized,slots.clearVerified);
 
         MaterialCardView report=card(page);
         LinearLayout output=cardContent(report);
@@ -408,14 +444,14 @@ public final class MaterialShell {
         return screen(page);
     }
 
-    private void optimizeButtons(LinearLayout row, View one, View two) {
-        for(View v:new View[]{one,two}) {
-            if(v==null)continue;
-            detach(v);
-            LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,-2,1);
-            p.rightMargin=dp(4);
-            row.addView(v,p);
-        }
+    /** Scan preset is one exclusive choice, not a second hidden setting. */
+    public void updateScanMode(int preset) {
+        if(customScanControls!=null)
+            customScanControls.setVisibility(preset==3?View.VISIBLE:View.GONE);
+    }
+    public void updateRankMode(int mode) {
+        if(scoringControls!=null)
+            scoringControls.setVisibility(mode==2?View.VISIBLE:View.GONE);
     }
 
     private View settingsPage() {
@@ -478,14 +514,16 @@ public final class MaterialShell {
         MaterialCardView performance=card(page);
         LinearLayout perf=cardContent(performance);
         label(perf,"性能与扫描","适用于长文件下载、蜂窝流量与节点搜索");
-        slider(perf,"扫描候选数量",32,768,32,prefs.scanSize(),n->prefs.scanSize(n));
-        slider(perf,"扫描并发线程",4,64,4,prefs.scanThreads(),n->prefs.scanThreads(n));
+        TextView scanSettings=text("扫描候选、并发、测速数量及综合评分已统一到「线路」页。"
+            +" 本页只保留下载与缓存参数，避免两处设置互相覆盖。",13,false);
+        scanSettings.setTextColor(onSurfaceVariant);
+        perf.addView(scanSettings);
         slider(perf,"libaria2 下载连接数",1,16,1,prefs.connections(),n->prefs.connections(n));
         MaterialSwitch multi=switchItem(perf,"Multi-IP Turbo · 实验性",
             "默认关闭。同一文件的连接分配给最多 4 个已验证 Google IP；"
             +"总连接数不变。失败回退单 IP。设置仅影响新任务。",prefs.multiIp());
         multi.setOnCheckedChangeListener((button,checked)->prefs.multiIp(checked));
-        slider(perf,"优选缓存时间（分钟）",5,240,5,prefs.cacheMinutes(),n->prefs.cacheMinutes(n));
+        slider(perf,"验证结果有效期（分钟）",5,1440,5,prefs.cacheMinutes(),n->prefs.cacheMinutes(n));
         slider(perf,"备用节点数量",1,8,1,prefs.fallbackCount(),n->prefs.fallbackCount(n));
 
         MaterialCardView portability=card(page);
@@ -559,7 +597,7 @@ public final class MaterialShell {
 
         MaterialCardView about=card(page);
         LinearLayout version=cardContent(about);
-        label(version,"关于 gdirect","v1.0.0 RC4-exp2 · Android ARM64");
+        label(version,"关于 gdirect","v1.0.0 RC4-exp3 · Android ARM64");
         footnote=text("使用原版 libaria2、Google Drive API 与 Google 官方 TLS 身份验证。"
             +" 浏览器 OAuth 和 Token 刷新使用系统默认网络；文件 API 与下载遵照所选 Android 网络。",13,false);
         footnote.setTextColor(onSurfaceVariant);
@@ -723,6 +761,8 @@ public final class MaterialShell {
             int good = state.optInt("good",0);
             int total = state.optInt("total",0);
             scanProgressBar.setVisibility(running ? View.VISIBLE : View.GONE);
+            if(slots.scanCancel!=null)
+                slots.scanCancel.setVisibility(running?View.VISIBLE:View.GONE);
             scanProgressLabel.setVisibility(running ? View.VISIBLE : View.GONE);
             if (running) {
                 scanProgressBar.setProgressCompat(
@@ -734,6 +774,7 @@ public final class MaterialShell {
         } catch (LinkageError | Exception ignored) {
             scanProgressBar.setVisibility(View.GONE);
             scanProgressLabel.setVisibility(View.GONE);
+            if(slots.scanCancel!=null)slots.scanCancel.setVisibility(View.GONE);
         }
     }
 

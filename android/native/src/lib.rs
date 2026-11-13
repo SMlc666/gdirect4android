@@ -16,13 +16,29 @@ mod aria2;
 mod api;
 mod selector;
 use jni::JNIEnv;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 fn to_java(env: &mut JNIEnv<'_>, text: &str) -> jstring {
     env.new_string(text)
         .map(|value| value.into_raw())
         .unwrap_or(std::ptr::null_mut())
+}
+
+/// No bundled "verified" IPs. Every diagnostic receives a fresh,
+/// per-Network validated list from the user-owned EndpointPool and checks
+/// the backend's independent Google address allowlist again.
+fn validated_endpoints(env: &mut JNIEnv<'_>, literal: JString<'_>) -> Vec<IpAddr> {
+    let Ok(value)=env.get_string(&literal) else { return Vec::new(); };
+    let csv=value.to_string_lossy();
+    let mut seen=HashSet::new();
+    csv.split(',').take(8).filter_map(|entry|{
+        let ip=entry.trim().parse::<Ipv4Addr>().ok()?;
+        if verify::google_ipv4(ip) && seen.insert(ip) {
+            Some(IpAddr::V4(ip))
+        }else{None}
+    }).collect()
 }
 
 fn network_report() -> String {
@@ -137,8 +153,10 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeTransferS
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     network_handle: jlong,
+    endpoints: JString<'_>,
 ) -> jstring {
-    to_java(&mut env, &transfer::run(network_handle as u64))
+    let ips=validated_endpoints(&mut env,endpoints);
+    to_java(&mut env, &transfer::run(network_handle as u64,&ips))
 }
 
 
@@ -150,6 +168,8 @@ pub extern "system" fn Java_com_smlc_gdirectandroid_MainActivity_nativeSavePubli
     _class: JClass<'_>,
     network_handle: jlong,
     cache_fd: jni::sys::jint,
+    endpoints: JString<'_>,
 ) -> jstring {
-    to_java(&mut env, &save::save(network_handle as u64, cache_fd))
+    let ips=validated_endpoints(&mut env,endpoints);
+    to_java(&mut env, &save::save(network_handle as u64,cache_fd,&ips))
 }

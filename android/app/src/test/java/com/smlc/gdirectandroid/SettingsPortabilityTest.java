@@ -65,6 +65,47 @@ public final class SettingsPortabilityTest {
         assertTrue(new UserPrefs(context).multiIp());
     }
 
+    @Test public void exp3CustomScanPreferencesRoundTrip() throws Exception {
+        prefs.scanPreset(3);
+        prefs.benchmarkCount(28);
+        prefs.scoreSpeedWeight(85);
+        prefs.subnetDiversity(100);
+        prefs.rankMode(2);
+        JSONObject backup=SettingsPortability.exportToJson(context);
+        prefs.scanPreset(0);
+        prefs.benchmarkCount(4);
+        prefs.scoreSpeedWeight(0);
+        SettingsPortability.importFromJson(context,backup.toString());
+        UserPrefs reloaded=new UserPrefs(context);
+        assertEquals(3,reloaded.scanPreset());
+        assertEquals(28,reloaded.benchmarkCount());
+        assertEquals(85,reloaded.scoreSpeedWeight());
+        assertEquals(100,reloaded.subnetDiversity());
+        assertEquals(2,reloaded.rankMode());
+    }
+    @Test public void legacySchemaOneSettingsStayImportable() throws Exception {
+        JSONObject backup=SettingsPortability.exportToJson(context);
+        backup.put("schema",1);
+        JSONObject settings=backup.getJSONObject("settings");
+        settings.remove("scan_preset");
+        settings.remove("benchmark_count");
+        settings.remove("speed_weight");
+        settings.remove("subnet_diversity");
+        SettingsPortability.importFromJson(context,backup.toString());
+        assertEquals(1,new UserPrefs(context).scanPreset());
+        assertEquals(12,new UserPrefs(context).benchmarkCount());
+    }
+    @Test public void invalidExp3SettingsAreRejectedAtomically() throws Exception {
+        JSONObject backup=SettingsPortability.exportToJson(context);
+        backup.getJSONObject("settings").put("theme","dark")
+            .put("speed_weight",101);
+        try {
+            SettingsPortability.importFromJson(context,backup.toString());
+            fail("Speed weight 101 must be rejected");
+        }catch(IllegalArgumentException expected){}
+        assertEquals("light",new UserPrefs(context).theme());
+    }
+
     @Test public void importedSettingsPersistWithoutExportingNetworkHandle() throws Exception {
         JSONObject backup=SettingsPortability.exportToJson(context);
         backup.getJSONObject("settings").put("theme","dark")
